@@ -28,6 +28,19 @@ void heidic_cleanup_renderer();
 // Sleep for milliseconds (to prevent CPU spinning)
 void heidic_sleep_ms(uint32_t milliseconds);
 
+// Cube rendering functions
+int heidic_init_renderer_cube(GLFWwindow* window);
+void heidic_render_frame_cube(GLFWwindow* window);
+void heidic_cleanup_renderer_cube();
+
+// ImGui functions
+int heidic_init_imgui(GLFWwindow* window);
+void heidic_imgui_new_frame();
+void heidic_imgui_render(VkCommandBuffer commandBuffer);
+void heidic_cleanup_imgui();
+// Helper to render a simple demo overlay (FPS, camera info, etc.)
+void heidic_imgui_render_demo_overlay(float fps, float camera_x, float camera_y, float camera_z);
+
 #ifdef __cplusplus
 }
 #endif

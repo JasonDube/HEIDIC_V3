@@ -24,8 +24,24 @@ pub enum Token {
     Struct,
     #[token("component")]
     Component,
+    #[token("component_soa")]
+    ComponentSOA,
     #[token("system")]
     System,
+    #[token("shader")]
+    Shader,
+    #[token("vertex")]
+    Vertex,
+    #[token("fragment")]
+    Fragment,
+    #[token("compute")]
+    Compute,
+    #[token("geometry")]
+    Geometry,
+    #[token("tessellation_control")]
+    TessellationControl,
+    #[token("tessellation_evaluation")]
+    TessellationEvaluation,
     #[token("for")]
     For,
     #[token("in")]
@@ -34,6 +50,12 @@ pub enum Token {
     Query,
     #[token("extern")]
     Extern,
+    
+    // Attributes
+    #[token("@hot")]
+    Hot,
+    #[token("@")]
+    At,
     
     // Types
     #[token("i32")]
@@ -178,6 +200,12 @@ pub struct Lexer {
     source: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct TokenWithLocation {
+    pub token: Token,
+    pub location: crate::error::SourceLocation,
+}
+
 impl Lexer {
     pub fn new(source: &str) -> Self {
         Self {
@@ -185,20 +213,57 @@ impl Lexer {
         }
     }
     
-    pub fn tokenize(&mut self) -> Result<Vec<Token>> {
+    fn byte_to_line_column(&self, byte_pos: usize) -> (usize, usize) {
+        let mut line = 1;
+        let mut column = 1;
+        let mut current_byte = 0;
+        
+        for (i, ch) in self.source.char_indices() {
+            if current_byte >= byte_pos {
+                break;
+            }
+            
+            if ch == '\n' {
+                line += 1;
+                column = 1;
+            } else {
+                column += 1;
+            }
+            
+            current_byte = i + ch.len_utf8();
+        }
+        
+        (line, column)
+    }
+    
+    pub fn tokenize(&mut self) -> Result<Vec<TokenWithLocation>> {
         let mut lexer = Token::lexer(&self.source);
         let mut tokens = Vec::new();
         
         while let Some(token_result) = lexer.next() {
             match token_result {
-                Ok(token) => tokens.push(token),
+                Ok(token) => {
+                    let span = lexer.span();
+                    let (line, column) = self.byte_to_line_column(span.start);
+                    tokens.push(TokenWithLocation {
+                        token,
+                        location: crate::error::SourceLocation::new(line, column),
+                    });
+                }
                 Err(_) => {
-                    bail!("Lexical error at position {}", lexer.span().start);
+                    let span = lexer.span();
+                    let (line, column) = self.byte_to_line_column(span.start);
+                    bail!("Lexical error at {}:{}", line, column);
                 }
             }
         }
         
         Ok(tokens)
+    }
+    
+    // Legacy method for backward compatibility
+    pub fn tokenize_simple(&mut self) -> Result<Vec<Token>> {
+        Ok(self.tokenize()?.into_iter().map(|twl| twl.token).collect())
     }
 }
 

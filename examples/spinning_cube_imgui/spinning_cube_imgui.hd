@@ -1,0 +1,101 @@
+// EDEN ENGINE - Spinning Cube with ImGui Overlay
+// Demonstrates 3D rendering with ImGui UI overlay
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer_cube(window: GLFWwindow): i32;
+extern fn heidic_init_imgui(window: GLFWwindow): i32;
+extern fn heidic_render_frame_cube(window: GLFWwindow): void;
+extern fn heidic_imgui_new_frame(): void;
+extern fn heidic_imgui_render_demo_overlay(fps: f32, x: f32, y: f32, z: f32): void;
+extern fn heidic_cleanup_renderer_cube(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+fn main(): void {
+    print("=== EDEN ENGINE Spinning Cube with ImGui ===\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+    
+    print("Creating window...\n");
+    let window: GLFWwindow = glfwCreateWindow(1280, 720, "EDEN ENGINE - Cube with ImGui", 0, 0);
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Initializing Vulkan renderer for cube...\n");
+
+    let renderer_init: i32 = heidic_init_renderer_cube(window);
+    if renderer_init == 0 {
+        print("Failed to initialize renderer!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("Renderer initialized!\n");
+    print("Initializing ImGui...\n");
+
+    let imgui_init: i32 = heidic_init_imgui(window);
+    if imgui_init == 0 {
+        print("WARNING: ImGui initialization failed (may not be compiled with --imgui flag)\n");
+        print("Continuing without ImGui...\n");
+    } else {
+        print("ImGui initialized successfully!\n");
+    }
+
+    print("Starting render loop...\n");
+    print("You should see a spinning colorful cube with ImGui overlay!\n");
+    print("Press ESC or close the window to exit.\n");
+
+    let frame_count: f32 = 0.0;
+    let fps_update_counter: f32 = 0.0;
+    let fps: f32 = 0.0;
+
+    while glfwWindowShouldClose(window) == 0 {
+        glfwPollEvents();
+
+        if glfwGetKey(window, 256) == 1 { // ESC key
+            glfwSetWindowShouldClose(window, 1);
+        }
+
+        // Simple FPS calculation: count frames, update every 60 frames (~1 second at 60 FPS)
+        frame_count = frame_count + 1.0;
+        fps_update_counter = fps_update_counter + 1.0;
+        
+        if fps_update_counter >= 60.0 {
+            fps = frame_count;
+            frame_count = 0.0;
+            fps_update_counter = 0.0;
+        }
+
+        // Start ImGui frame (before rendering)
+        heidic_imgui_new_frame();
+        
+        // Render demo overlay (FPS and camera position)
+        // Note: Camera position is hardcoded in the renderer, so we'll use placeholder values
+        // In a real implementation, you'd get these from the renderer
+        heidic_imgui_render_demo_overlay(fps, 3.0, 3.0, 3.0);
+
+        // Render the cube (this also renders ImGui automatically)
+        heidic_render_frame_cube(window);
+        
+        heidic_sleep_ms(16); // ~60 FPS cap
+    }
+
+    print("Cleaning up...\n");
+    heidic_cleanup_renderer_cube();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Done!\n");
+}
+

@@ -1,0 +1,64 @@
+// EDEN ENGINE - Spinning Cube Test
+// Renders a colorful 3D cube that spins
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer_cube(window: GLFWwindow): i32;
+extern fn heidic_render_frame_cube(window: GLFWwindow): void;
+extern fn heidic_cleanup_renderer_cube(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+fn main(): void {
+    print("=== EDEN ENGINE Spinning Cube Test ===\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+    
+    print("Creating window...\n");
+    let window: GLFWwindow = glfwCreateWindow(800, 600, "EDEN ENGINE Spinning Cube", 0, 0);
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Initializing Vulkan renderer for cube...\n");
+
+    let renderer_init: i32 = heidic_init_renderer_cube(window);
+    if renderer_init == 0 {
+        print("Failed to initialize renderer!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("Renderer initialized!\n");
+    print("Starting render loop...\n");
+    print("You should see a spinning colorful cube!\n");
+    print("Press ESC or close the window to exit.\n");
+
+    while glfwWindowShouldClose(window) == 0 {
+        glfwPollEvents();
+
+        if glfwGetKey(window, 256) == 1 { // ESC key
+            glfwSetWindowShouldClose(window, 1);
+        }
+
+        heidic_render_frame_cube(window);
+        heidic_sleep_ms(16); // ~60 FPS cap
+    }
+
+    print("Cleaning up...\n");
+    heidic_cleanup_renderer_cube();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Done!\n");
+}
+

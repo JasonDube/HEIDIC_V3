@@ -9,6 +9,7 @@ pub enum Type {
     Array(Box<Type>),
     Struct(String),
     Component(String),
+    Query(Vec<Type>), // query<Component1, Component2, ...>
     Void,
     // Vulkan types
     VkInstance,
@@ -48,6 +49,7 @@ pub enum Item {
     Struct(StructDef),
     Component(ComponentDef),
     System(SystemDef),
+    Shader(ShaderDef),
     Function(FunctionDef),
     ExternFunction(ExternFunctionDef),
 }
@@ -62,12 +64,31 @@ pub struct StructDef {
 pub struct ComponentDef {
     pub name: String,
     pub fields: Vec<Field>,
+    pub is_soa: bool,  // true if component_soa, false if regular component
 }
 
 #[derive(Debug, Clone)]
 pub struct SystemDef {
     pub name: String,
     pub functions: Vec<FunctionDef>,
+    pub is_hot: bool,  // true if marked with @hot
+}
+
+#[derive(Debug, Clone)]
+pub struct ShaderDef {
+    pub stage: ShaderStage,
+    pub path: String,  // Path to shader source file
+    pub is_hot: bool,  // true if marked with @hot
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShaderStage {
+    Vertex,
+    Fragment,
+    Compute,
+    Geometry,
+    TessellationControl,
+    TessellationEvaluation,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +125,7 @@ pub enum Statement {
     Assign { target: Expression, value: Expression },
     If { condition: Expression, then_block: Vec<Statement>, else_block: Option<Vec<Statement>> },
     While { condition: Expression, body: Vec<Statement> },
+    For { iterator: String, collection: Expression, body: Vec<Statement> },
     Loop { body: Vec<Statement> },
     Return(Option<Expression>),
     Expression(Expression),

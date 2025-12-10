@@ -1,18 +1,35 @@
 use crate::ast::*;
-use crate::lexer::Token;
+use crate::lexer::{Token, TokenWithLocation};
+use crate::error::SourceLocation;
 use anyhow::{Result, bail};
 
 pub struct Parser {
-    tokens: Vec<Token>,
+    tokens: Vec<TokenWithLocation>,
     current: usize,
+    current_location: SourceLocation,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
+    pub fn new(tokens: Vec<TokenWithLocation>) -> Self {
+        let current_location = tokens.first()
+            .map(|t| t.location)
+            .unwrap_or_else(SourceLocation::unknown);
         Self {
             tokens,
             current: 0,
+            current_location,
         }
+    }
+    
+    // Legacy constructor for backward compatibility
+    pub fn new_simple(tokens: Vec<Token>) -> Self {
+        let tokens_with_location: Vec<TokenWithLocation> = tokens.into_iter()
+            .map(|token| TokenWithLocation {
+                token,
+                location: SourceLocation::unknown(),
+            })
+            .collect();
+        Self::new(tokens_with_location)
     }
     
     pub fn parse(&mut self) -> Result<Program> {
@@ -33,11 +50,56 @@ impl Parser {
             }
             Token::Component => {
                 self.advance();
-                Ok(Item::Component(self.parse_component()?))
+                Ok(Item::Component(self.parse_component(false)?))
+            }
+            Token::ComponentSOA => {
+                self.advance();
+                Ok(Item::Component(self.parse_component(true)?))
             }
             Token::System => {
                 self.advance();
-                Ok(Item::System(self.parse_system()?))
+                Ok(Item::System(self.parse_system(false)?))
+            }
+            Token::Shader => {
+                self.advance();
+                Ok(Item::Shader(self.parse_shader(false)?))
+            }
+            Token::Hot => {
+                // @hot system name { ... } or @hot shader vertex "path" { }
+                self.advance();
+                if self.check(&Token::System) {
+                    self.advance();
+                    // Parse system name (might have parentheses for old syntax)
+                    let name = if self.check(&Token::LParen) {
+                        // Old syntax: system(name) - skip paren and get name
+                        self.advance();
+                        let name = self.expect_ident()?;
+                        self.expect(&Token::RParen)?;
+                        name
+                    } else {
+                        // New syntax: system name
+                        self.expect_ident()?
+                    };
+                    self.expect(&Token::LBrace)?;
+                    
+                    let mut functions = Vec::new();
+                    while !self.check(&Token::RBrace) {
+                        if self.check(&Token::Fn) {
+                            self.advance();
+                            functions.push(self.parse_function()?);
+                        } else {
+                            bail!("Expected function in system");
+                        }
+                    }
+                    self.expect(&Token::RBrace)?;
+                    
+                    Ok(Item::System(SystemDef { name, functions, is_hot: true }))
+                } else if self.check(&Token::Shader) {
+                    self.advance();
+                    Ok(Item::Shader(self.parse_shader(true)?))
+                } else {
+                    bail!("Expected 'system' or 'shader' after '@hot'");
+                }
             }
             Token::Extern => {
                 self.advance();
@@ -67,7 +129,7 @@ impl Parser {
         Ok(StructDef { name, fields })
     }
     
-    fn parse_component(&mut self) -> Result<ComponentDef> {
+    fn parse_component(&mut self, is_soa: bool) -> Result<ComponentDef> {
         let name = self.expect_ident()?;
         self.expect(&Token::LBrace)?;
         
@@ -80,10 +142,10 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         
-        Ok(ComponentDef { name, fields })
+        Ok(ComponentDef { name, fields, is_soa })
     }
     
-    fn parse_system(&mut self) -> Result<SystemDef> {
+    fn parse_system(&mut self, is_hot: bool) -> Result<SystemDef> {
         let name = self.expect_ident()?;
         self.expect(&Token::LBrace)?;
         
@@ -98,7 +160,65 @@ impl Parser {
         }
         self.expect(&Token::RBrace)?;
         
-        Ok(SystemDef { name, functions })
+        Ok(SystemDef { name, functions, is_hot })
+    }
+    
+    fn parse_shader(&mut self, is_hot: bool) -> Result<crate::ast::ShaderDef> {
+        use crate::ast::ShaderStage;
+        // Parse shader stage: vertex, fragment, compute, etc.
+        let stage = match self.peek() {
+            Token::Vertex => {
+                self.advance();
+                ShaderStage::Vertex
+            }
+            Token::Fragment => {
+                self.advance();
+                ShaderStage::Fragment
+            }
+            Token::Compute => {
+                self.advance();
+                ShaderStage::Compute
+            }
+            Token::Geometry => {
+                self.advance();
+                ShaderStage::Geometry
+            }
+            Token::TessellationControl => {
+                self.advance();
+                ShaderStage::TessellationControl
+            }
+            Token::TessellationEvaluation => {
+                self.advance();
+                ShaderStage::TessellationEvaluation
+            }
+            _ => {
+                bail!("Expected shader stage (vertex, fragment, compute, etc.)");
+            }
+        };
+        
+        // Parse shader path: "path/to/shader.glsl"
+        let path = if let Token::StringLit(ref path) = *self.peek() {
+            let path = path.clone();
+            self.advance();
+            path
+        } else {
+            bail!("Expected shader file path string");
+        };
+        
+        // Parse optional body: { }
+        if self.check(&Token::LBrace) {
+            self.advance();
+            // Skip body content for now (could contain metadata later)
+            while !self.check(&Token::RBrace) && !self.is_at_end() {
+                self.advance();
+            }
+            if !self.check(&Token::RBrace) {
+                bail!("Expected '}}' to close shader declaration");
+            }
+            self.advance();
+        }
+        
+        Ok(crate::ast::ShaderDef { stage, path, is_hot })
     }
     
     fn parse_extern_function(&mut self) -> Result<ExternFunctionDef> {
@@ -329,6 +449,23 @@ impl Parser {
                 self.advance();
                 Ok(Type::Mat4)
             }
+            Token::Query => {
+                // Parse query<Component1, Component2, ...>
+                self.advance();
+                self.expect(&Token::Lt)?;
+                let mut component_types = Vec::new();
+                loop {
+                    let ty = self.parse_type()?;
+                    component_types.push(ty);
+                    if self.check(&Token::Comma) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                self.expect(&Token::Gt)?;
+                Ok(Type::Query(component_types))
+            }
             Token::Ident(ref name) => {
                 let name_clone = name.clone();
                 self.advance();
@@ -409,6 +546,15 @@ impl Parser {
                 };
                 let body = self.parse_block()?;
                 Ok(Statement::While { condition, body })
+            }
+            Token::For => {
+                // Parse: for <iterator> in <collection> { ... }
+                self.advance();
+                let iterator = self.expect_ident()?;
+                self.expect(&Token::In)?;
+                let collection = self.parse_expression()?;
+                let body = self.parse_block()?;
+                Ok(Statement::For { iterator, collection, body })
             }
             Token::Loop => {
                 self.advance();
@@ -722,13 +868,26 @@ impl Parser {
     }
     
     fn peek(&self) -> &Token {
-        &self.tokens[self.current]
+        &self.tokens[self.current].token
+    }
+    
+    fn peek_location(&self) -> SourceLocation {
+        if self.current < self.tokens.len() {
+            self.tokens[self.current].location
+        } else {
+            SourceLocation::unknown()
+        }
     }
     
     fn advance(&mut self) {
         if !self.is_at_end() {
+            self.current_location = self.tokens[self.current].location;
             self.current += 1;
         }
+    }
+    
+    fn current_location(&self) -> SourceLocation {
+        self.current_location
     }
     
     fn is_at_end(&self) -> bool {

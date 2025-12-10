@@ -1,0 +1,438 @@
+// ============================================================================
+// HEIDIC Component Framework - Complete Beginner's Example
+// ============================================================================
+// This example demonstrates how to use the ECS Component Framework to create
+// and manage entities in a modern, flexible way.
+//
+// What You'll Learn:
+//   1. How to define components
+//   2. How to create entities and add components
+//   3. How to query entities with specific components
+//   4. How to use systems to process entities
+//   5. How to avoid the pitfalls of rigid entity types
+//
+// This replaces the old 2001-style entity system with a modern component-based
+// approach that is flexible, consistent, and powerful.
+// ============================================================================
+
+// ============================================================================
+// STEP 1: Import the Component Framework
+// ============================================================================
+// In a real project, you would import the component framework like this:
+//   #include "stdlib/ecs_components.hd"
+//
+// For this example, we'll define the components inline so you can see
+// everything in one file.
+
+// ============================================================================
+// STEP 2: Define Core Components
+// ============================================================================
+
+// Render Layer Component - Determines where entity renders
+// layer: 0 = Level, 1 = ScreenForeground, 2 = LevelBackground, 3 = ScreenBackground
+component RenderLayer {
+    layer: i32  // 0=Level, 1=ScreenForeground, 2=LevelBackground, 3=ScreenBackground
+}
+
+// Render layer types - where the entity should be rendered
+// Note: Enums not yet implemented in HEIDIC, using i32 constants instead
+// Level = 0, ScreenForeground = 1, LevelBackground = 2, ScreenBackground = 3
+
+// Visibility Component - Consistent visibility handling
+// Replaces old INVISIBLE flag vs SHOW flag inconsistency
+// Note: Default values not yet fully supported, initialize explicitly
+component Visible {
+    is_visible: bool  // true = visible, false = hidden
+}
+
+// Position Component - World coordinates (for level entities)
+component Position {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+// View Position Component - View coordinates (for UI elements)
+component ViewPosition {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+// Model Component - 3D model for rendering
+component Model {
+    mesh: string,      // Mesh file path
+    texture: string    // Optional texture (use "" for none)
+}
+
+// Sprite Component - 2D sprite for rendering
+component Sprite {
+    texture: string,   // Texture file path
+    width: f32,        // Sprite width
+    height: f32        // Sprite height
+}
+
+// Event Handler Component - Determines what events entity responds to
+component EventHandler {
+    handles_collision: bool,  // true = responds to collision events
+    handles_mouse: bool       // true = responds to mouse events
+}
+
+// ============================================================================
+// STEP 3: Create Entities with Components
+// ============================================================================
+// Instead of creating "entity types" (like Level Entity, View Entity),
+// we create entities and add components to them. This is much more flexible!
+
+// Example 1: Create a Level Entity (Actor/Vehicle/Vegetation)
+// Old way (2001): ent_create with ENTITY* struct, check INVISIBLE flag
+// New way: Create entity, add components
+fn create_level_actor(): void {
+    print("Creating level actor entity...\n");
+    
+    // In a real implementation, this would create an entity:
+    // let entity = create_entity();
+    
+    // Add position in world coordinates
+    // add_component(entity, Position { x: 10.0, y: 0.0, z: 5.0 });
+    
+    // Add 3D model
+    // add_component(entity, Model { mesh: "actor.obj", texture: "actor.png" });
+    
+    // Render in level layer (main game world)
+    // add_component(entity, RenderLayer { layer: 0 });  // 0 = Level
+    
+    // Make it visible (replaces: entity->flags &= ~INVISIBLE)
+    // add_component(entity, Visible { is_visible: true });
+    
+    // Handle collision and mouse events
+    // add_component(entity, EventHandler { 
+    //     handles_collision: true, 
+    //     handles_mouse: true 
+    // });
+    
+    print("Level actor created with components:\n");
+    print("  - Position (world coordinates)\n");
+    print("  - Model (3D mesh)\n");
+    print("  - RenderLayer.layer = 0 (Level - renders in game world)\n");
+    print("  - Visible.is_visible = true (visible)\n");
+    print("  - EventHandler (handles collision & mouse)\n");
+    print("\n");
+}
+
+// Example 2: Create a View Entity (3D Panel Element)
+// Old way (2001): ent_create with ENTITY* struct, set flags2 SHOW flag
+// New way: Create entity, add components
+fn create_view_panel(): void {
+    print("Creating view panel entity (UI element)...\n");
+    
+    // In a real implementation:
+    // let entity = create_entity();
+    
+    // Add position in view coordinates (camera space)
+    // add_component(entity, ViewPosition { x: 0.0, y: 0.0, z: -1.0 });
+    
+    // Add sprite texture
+    // add_component(entity, Sprite { texture: "panel.png", width: 200.0, height: 100.0 });
+    
+    // Render in screen foreground (UI layer)
+    // add_component(entity, RenderLayer { layer: 1 });  // 1 = ScreenForeground
+    
+    // Hidden by default (replaces: entity->flags2 |= SHOW to make visible)
+    // add_component(entity, Visible { is_visible: false });
+    
+    // No event handling (UI elements don't need collision)
+    // add_component(entity, EventHandler { 
+    //     handles_collision: false, 
+    //     handles_mouse: false 
+    // });
+    
+    print("View panel created with components:\n");
+    print("  - ViewPosition (view/camera coordinates)\n");
+    print("  - Sprite (2D texture)\n");
+    print("  - RenderLayer.layer = 1 (ScreenForeground - renders in UI layer)\n");
+    print("  - Visible.is_visible = false (hidden, set to true to show)\n");
+    print("  - EventHandler (no events handled)\n");
+    print("\n");
+}
+
+// Example 3: Create a Sky Entity (Sky/Background/Horizon)
+// Old way (2001): ent_createlayer with ENTITY* struct, set flags2 SHOW flag
+// New way: Create entity, add components
+fn create_sky_background(): void {
+    print("Creating sky background entity...\n");
+    
+    // In a real implementation:
+    // let entity = create_entity();
+    
+    // Add position (sky entities use special positioning)
+    // add_component(entity, Position { x: 0.0, y: 1000.0, z: 0.0 });
+    
+    // Add sky model
+    // add_component(entity, Model { mesh: "sky.obj", texture: "sky.png" });
+    
+    // Render in level background (behind everything)
+    // add_component(entity, RenderLayer { layer: 2 });  // 2 = LevelBackground
+    
+    // Hidden by default (replaces: entity->flags2 |= SHOW to make visible)
+    // add_component(entity, Visible { is_visible: false });
+    
+    // No event handling (sky doesn't interact)
+    // add_component(entity, EventHandler { 
+    //     handles_collision: false, 
+    //     handles_mouse: false 
+    // });
+    
+    print("Sky background created with components:\n");
+    print("  - Position (world coordinates)\n");
+    print("  - Model (sky mesh)\n");
+    print("  - RenderLayer.layer = 2 (LevelBackground - renders behind level)\n");
+    print("  - Visible.is_visible = false (hidden, set to true to show)\n");
+    print("  - EventHandler (no events handled)\n");
+    print("\n");
+}
+
+// ============================================================================
+// STEP 4: Query Entities with Components
+// ============================================================================
+// Instead of iterating through entity types, we query for entities with
+// specific component combinations. This is much more flexible and powerful!
+
+// Example: Render all visible level entities
+// Old way (2001): Iterate through level entities, check INVISIBLE flag
+// New way: Query for entities with RenderLayer.Level and Visible
+// Note: @system syntax not yet implemented, using regular function for now
+fn render_level_entities(q: query<Position, Model, RenderLayer, Visible>): void {
+    print("Rendering level entities...\n");
+    
+    // The query finds all entities that have ALL of these components:
+    // - Position (world coordinates)
+    // - Model (3D mesh)
+    // - RenderLayer (where to render)
+    // - Visible (visibility state)
+    
+    for entity in q {
+        // Check if this entity should be rendered
+        // Only render if:
+        //   1. Layer is Level (main game world)
+        //   2. Entity is visible
+        
+        // In a real implementation, you would check:
+        //   if entity.RenderLayer.layer == 0 && entity.Visible.is_visible {
+        //       draw_model(entity.Model.mesh, entity.Position);
+        //   }
+        // Where:
+        //   - entity.RenderLayer.layer == 0 means "Level" layer
+        //   - entity.Visible.is_visible == true means entity is visible
+        //   - entity.Position contains world coordinates (x, y, z)
+        //   - entity.Model.mesh contains the mesh file path
+        
+        // For this educational example, we'll just demonstrate the concept
+        print("  Processing entity in query\n");
+        print("  Would render if: layer == 0 (Level) AND is_visible == true\n");
+        print("  Would access: entity.Position, entity.Model.mesh\n");
+    }
+    
+    print("\n");
+}
+
+// Example: Render all visible UI elements
+// Old way (2001): Iterate through view entities, check flags2 SHOW flag
+// New way: Query for entities with RenderLayer.ScreenForeground and Visible
+// Note: @system syntax not yet implemented, using regular function for now
+fn render_ui_elements(q: query<ViewPosition, Sprite, RenderLayer, Visible>): void {
+    print("Rendering UI elements...\n");
+    
+    // The query finds all entities that have:
+    // - ViewPosition (view coordinates)
+    // - Sprite (2D texture)
+    // - RenderLayer (where to render)
+    // - Visible (visibility state)
+    
+    for entity in q {
+        // Only render if:
+        //   1. Layer is ScreenForeground (UI layer)
+        //   2. Entity is visible
+        
+        // In a real implementation, you would check:
+        //   if entity.RenderLayer.layer == 1 && entity.Visible.is_visible {
+        //       draw_sprite(entity.Sprite.texture, entity.ViewPosition);
+        //   }
+        // Where:
+        //   - entity.RenderLayer.layer == 1 means "ScreenForeground" layer
+        //   - entity.Visible.is_visible == true means entity is visible
+        //   - entity.ViewPosition contains view coordinates (x, y, z)
+        //   - entity.Sprite.texture contains the texture file path
+        
+        // For this educational example, we'll just demonstrate the concept
+        print("  Processing UI entity in query\n");
+        print("  Would render if: layer == 1 (ScreenForeground) AND is_visible == true\n");
+        print("  Would access: entity.ViewPosition, entity.Sprite.texture\n");
+    }
+    
+    print("\n");
+}
+
+// Example: Process collision events
+// Old way (2001): Iterate through level entities, check if they handle collision
+// New way: Query for entities with EventHandler.handles_collision
+// Note: @system syntax not yet implemented, using regular function for now
+fn process_collision_events(q: query<Position, EventHandler>): void {
+    print("Processing collision events...\n");
+    
+    // The query finds all entities that have:
+    // - Position (need position for collision)
+    // - EventHandler (determines if entity handles events)
+    
+    for entity in q {
+        // In a real implementation, you would check:
+        //   if entity.EventHandler.handles_collision {
+        //       check_collision(entity.Position);
+        //   }
+        // Where:
+        //   - entity.EventHandler.handles_collision == true means entity responds to collisions
+        //   - entity.Position contains world coordinates for collision detection
+        
+        // For this educational example, we'll just demonstrate the concept
+        print("  Processing entity in collision query\n");
+        print("  Would check collision if: handles_collision == true\n");
+        print("  Would access: entity.Position, entity.EventHandler.handles_collision\n");
+    }
+    
+    print("\n");
+}
+
+// ============================================================================
+// STEP 5: Benefits of Component-Based Approach
+// ============================================================================
+
+fn demonstrate_flexibility(): void {
+    print("=== Benefits of Component-Based Approach ===\n");
+    print("\n");
+    
+    print("1. FLEXIBLE: Entity can change category by adding/removing components\n");
+    print("   Example: Level entity can become UI element:\n");
+    print("     - Remove RenderLayer.Level component\n");
+    print("     - Add RenderLayer.ScreenForeground component\n");
+    print("     - Change Position to ViewPosition\n");
+    print("   No need to recreate entity or change 'type'!\n");
+    print("\n");
+    
+    print("2. CONSISTENT: Same component pattern everywhere\n");
+    print("   - All entities use Visible component (not INVISIBLE vs SHOW flags)\n");
+    print("   - All entities use RenderLayer component (not entity 'type')\n");
+    print("   - Same pattern = easier to understand and maintain\n");
+    print("\n");
+    
+    print("3. QUERYABLE: Easy to find entities with specific combinations\n");
+    print("   - query<RenderLayer, Visible> finds all visible entities\n");
+    print("   - query<Position, EventHandler> finds all entities that handle events\n");
+    print("   - query<Model, RenderLayer> finds all entities with 3D models\n");
+    print("\n");
+    
+    print("4. EXTENSIBLE: Add new components without changing entity 'types'\n");
+    print("   - Add Physics component for physics simulation\n");
+    print("   - Add Animation component for animated entities\n");
+    print("   - Add AI component for AI-controlled entities\n");
+    print("   No need to create new entity types!\n");
+    print("\n");
+    
+    print("5. PERFORMANCE: Query only processes entities with required components\n");
+    print("   - Render system only processes entities with RenderLayer + Visible\n");
+    print("   - Collision system only processes entities with EventHandler.handles_collision\n");
+    print("   - Automatic filtering = better performance\n");
+    print("\n");
+}
+
+// ============================================================================
+// STEP 6: Comparison with Old System
+// ============================================================================
+
+fn compare_with_old_system(): void {
+    print("=== Comparison: Old System (2001) vs New System (HEIDIC) ===\n");
+    print("\n");
+    
+    print("OLD WAY (2001):\n");
+    print("  // Create level entity\n");
+    print("  ENTITY* ent = ent_create(ENTITY_LEVEL, ...);\n");
+    print("  ent->flags &= ~INVISIBLE;  // Make visible\n");
+    print("\n");
+    print("  // Create view entity\n");
+    print("  ENTITY* ui = ent_create(ENTITY_VIEW, ...);\n");
+    print("  ui->flags2 |= SHOW;  // Show flag (different from INVISIBLE!)\n");
+    print("\n");
+    print("  Problems:\n");
+    print("    - Rigid entity types (can't change type)\n");
+    print("    - Inconsistent flags (INVISIBLE vs SHOW)\n");
+    print("    - Mixed concerns (rendering + creation + events)\n");
+    print("\n");
+    
+    print("NEW WAY (HEIDIC):\n");
+    print("  // Create level entity\n");
+    print("  let ent = create_entity();\n");
+    print("  add_component(ent, RenderLayer { layer: 0 });  // 0 = Level\n");
+    print("  add_component(ent, Visible { is_visible: true });\n");
+    print("\n");
+    print("  // Create view entity\n");
+    print("  let ui = create_entity();\n");
+    print("  add_component(ui, RenderLayer { layer: 1 });  // 1 = ScreenForeground\n");
+    print("  add_component(ui, Visible { is_visible: true });  // Same pattern!\n");
+    print("\n");
+    print("  Benefits:\n");
+    print("    - Flexible (add/remove components to change behavior)\n");
+    print("    - Consistent (same Visible component everywhere)\n");
+    print("    - Separated (rendering, events, coordinates are independent)\n");
+    print("\n");
+}
+
+// ============================================================================
+// MAIN FUNCTION - Run All Examples
+// ============================================================================
+
+fn main(): void {
+    print("========================================\n");
+    print("HEIDIC Component Framework Example\n");
+    print("========================================\n");
+    print("\n");
+    print("This example demonstrates the modern component-based approach\n");
+    print("to entity management, replacing rigid entity types with flexible\n");
+    print("components.\n");
+    print("\n");
+    
+    // Step 1: Create entities
+    print("--- STEP 1: Creating Entities ---\n");
+    print("\n");
+    create_level_actor();
+    create_view_panel();
+    create_sky_background();
+    
+    // Step 2: Demonstrate queries
+    print("--- STEP 2: Querying Entities ---\n");
+    print("\n");
+    print("Note: In a real game, entities would be created and stored.\n");
+    print("Queries would find them automatically. For this example,\n");
+    print("we're showing the query syntax.\n");
+    print("\n");
+    
+    // Step 3: Show benefits
+    print("--- STEP 3: Benefits ---\n");
+    print("\n");
+    demonstrate_flexibility();
+    
+    // Step 4: Compare with old system
+    print("--- STEP 4: Comparison ---\n");
+    print("\n");
+    compare_with_old_system();
+    
+    print("========================================\n");
+    print("Example Complete!\n");
+    print("========================================\n");
+    print("\n");
+    print("Key Takeaways:\n");
+    print("  1. Use components instead of entity types\n");
+    print("  2. Query for entities with specific component combinations\n");
+    print("  3. Systems process entities based on their components\n");
+    print("  4. This approach is flexible, consistent, and powerful\n");
+    print("\n");
+}
+

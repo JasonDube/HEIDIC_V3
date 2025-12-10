@@ -1,0 +1,390 @@
+// ============================================================================
+// HEIDIC ECS Component Framework
+// ============================================================================
+// A modern, component-based approach to entity management.
+// Based on analysis of legacy entity systems, this framework provides:
+// - Flexible entity categorization (via components, not rigid types)
+// - Consistent visibility handling
+// - Clear separation of rendering, events, and coordinate systems
+//
+// Usage:
+//   Instead of creating "entity types", create entities and add components.
+//   Query for entities with specific component combinations.
+//
+// Example:
+//   let entity = create_entity();
+//   add_component(entity, Position { x: 0, y: 0, z: 0 });
+//   add_component(entity, RenderLayer { layer: RenderLayerType.Level });
+//   add_component(entity, Visible { is_visible: true });
+//
+//   // Query for all visible level entities
+//   fn render(q: query<Position, RenderLayer, Visible>): void {
+//       for entity in q {
+//           if entity.RenderLayer.layer == RenderLayerType.Level && entity.Visible.is_visible {
+//               draw_entity(entity);
+//           }
+//       }
+//   }
+// ============================================================================
+
+// ============================================================================
+// Render Layer System
+// ============================================================================
+// Determines where an entity renders (Level, UI, Sky, etc.)
+// Replaces rigid entity "types" with flexible component-based categorization.
+
+// Render layer types - where the entity should be rendered
+component RenderLayer {
+    layer: RenderLayerType
+}
+
+// Enum for render layer types
+// Level: Main game world (actors, vehicles, vegetation, terrain)
+// ScreenForeground: UI/overlay elements (3D panels, HUD)
+// LevelBackground: Sky, background, horizon (rendered behind level)
+// ScreenBackground: Full-screen background effects
+enum RenderLayerType {
+    Level,              // Main game world
+    ScreenForeground,   // UI/overlay elements
+    LevelBackground,    // Sky, background, horizon
+    ScreenBackground    // Full-screen effects
+}
+
+// ============================================================================
+// Visibility System
+// ============================================================================
+// Consistent visibility handling (replaces inconsistent INVISIBLE vs SHOW flags)
+
+component Visible {
+    is_visible: bool = true  // Default: visible
+}
+
+// Optional: Visibility flags for more control
+component VisibilityFlags {
+    show_in_level: bool = true,      // Show in level rendering
+    show_in_ui: bool = true,         // Show in UI rendering
+    show_in_editor: bool = true,     // Show in editor
+    show_in_shadows: bool = true,     // Cast/receive shadows
+    cull_by_distance: bool = false   // Cull if too far from camera
+}
+
+// ============================================================================
+// Coordinate System
+// ============================================================================
+// Determines which coordinate space the entity uses
+
+component CoordinateSystem {
+    system: CoordSystemType
+}
+
+enum CoordSystemType {
+    World,      // World coordinates (level entities)
+    View,       // View/camera coordinates (UI elements)
+    Screen,     // Screen/pixel coordinates (2D UI)
+    Mixed       // Mixed coordinates (sky entities: view position + world rotation)
+}
+
+// ============================================================================
+// Event Handling
+// ============================================================================
+// Determines what events the entity responds to
+
+component EventHandler {
+    handles_collision: bool = false,  // Responds to collision events
+    handles_mouse: bool = false,      // Responds to mouse events
+    handles_keyboard: bool = false,   // Responds to keyboard events
+    handles_touch: bool = false       // Responds to touch events
+}
+
+// Optional: More detailed event handling
+component CollisionHandler {
+    collision_type: CollisionType,
+    collision_group: i32 = 0,         // Collision group ID
+    collision_mask: i32 = 0xFFFFFFFF  // What groups this entity collides with
+}
+
+enum CollisionType {
+    None,           // No collision
+    Static,         // Static geometry (walls, terrain)
+    Dynamic,        // Dynamic objects (actors, vehicles)
+    Trigger,        // Trigger zone (no physics, just events)
+    Sensor          // Sensor (detects but doesn't collide)
+}
+
+// ============================================================================
+// Visual Ordering
+// ============================================================================
+// Determines rendering order (replaces view distance vs layer ordering)
+
+component VisualOrder {
+    order_type: OrderType,
+    layer: i32 = 0,              // Layer number (for layer-based ordering)
+    view_distance: f32 = 0.0,    // Distance from camera (for distance-based ordering)
+    z_index: f32 = 0.0            // Z-index for 2D/screen elements
+}
+
+enum OrderType {
+    ViewDistance,   // Order by distance from camera (level entities)
+    Layer,          // Order by layer number (UI elements)
+    Both,           // Order by layer, then distance (sky entities)
+    ZIndex          // Order by Z-index (2D elements)
+}
+
+// ============================================================================
+// Common Position Components
+// ============================================================================
+// Different position components for different coordinate systems
+
+// World coordinates (for level entities)
+component Position {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+// View coordinates (for UI elements)
+component ViewPosition {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+// Screen coordinates (for 2D UI)
+component ScreenPosition {
+    x: f32,  // Screen X (0.0 to 1.0 or pixels)
+    y: f32   // Screen Y (0.0 to 1.0 or pixels)
+}
+
+// Mixed coordinates (for sky entities)
+component SkyPosition {
+    view_x: f32,        // View position X
+    view_y: f32,        // View position Y
+    view_z: f32,        // View position Z
+    world_rotation_x: f32,  // World rotation X
+    world_rotation_y: f32,  // World rotation Y
+    world_rotation_z: f32   // World rotation Z
+}
+
+// ============================================================================
+// Rendering Components
+// ============================================================================
+
+// 3D Model (for level entities, sky entities)
+component Model {
+    mesh: string,           // Mesh file path
+    texture: string = "",   // Optional texture override
+    material: string = ""   // Optional material name
+}
+
+// 2D Sprite (for UI elements, sprites)
+component Sprite {
+    texture: string,        // Texture file path
+    width: f32 = 1.0,      // Sprite width
+    height: f32 = 1.0,     // Sprite height
+    uv_x: f32 = 0.0,       // UV offset X
+    uv_y: f32 = 0.0,       // UV offset Y
+    uv_width: f32 = 1.0,   // UV width
+    uv_height: f32 = 1.0   // UV height
+}
+
+// Terrain (for level entities)
+component Terrain {
+    heightmap: string,      // Heightmap texture
+    size_x: f32 = 100.0,   // Terrain size X
+    size_z: f32 = 100.0,   // Terrain size Z
+    height_scale: f32 = 1.0 // Height scale factor
+}
+
+// ============================================================================
+// Example: Creating Entities with Components
+// ============================================================================
+
+// Example: Create a level entity (actor/vehicle/vegetation)
+// Old way (2001): ent_create with ENTITY* struct
+// New way: create entity, add components
+/*
+fn create_level_entity(): void {
+    let entity = create_entity();
+    
+    // Position in world coordinates
+    add_component(entity, Position { x: 0, y: 0, z: 0 });
+    
+    // 3D model
+    add_component(entity, Model { mesh: "actor.obj" });
+    
+    // Render in level layer
+    add_component(entity, RenderLayer { layer: RenderLayerType.Level });
+    
+    // Visible by default
+    add_component(entity, Visible { is_visible: true });
+    
+    // Handle collision and mouse events
+    add_component(entity, EventHandler { 
+        handles_collision: true, 
+        handles_mouse: true 
+    });
+    
+    // Use world coordinates
+    add_component(entity, CoordinateSystem { system: CoordSystemType.World });
+    
+    // Order by view distance
+    add_component(entity, VisualOrder { 
+        order_type: OrderType.ViewDistance 
+    });
+}
+*/
+
+// Example: Create a view entity (3D panel element)
+// Old way (2001): ent_create with ENTITY* struct, flags2 SHOW flag
+// New way: create entity, add components
+/*
+fn create_view_entity(): void {
+    let entity = create_entity();
+    
+    // Position in view coordinates
+    add_component(entity, ViewPosition { x: 0, y: 0, z: 0 });
+    
+    // Sprite texture
+    add_component(entity, Sprite { texture: "panel.png" });
+    
+    // Render in screen foreground
+    add_component(entity, RenderLayer { layer: RenderLayerType.ScreenForeground });
+    
+    // Hidden by default (set SHOW flag = set is_visible to true)
+    add_component(entity, Visible { is_visible: false });
+    
+    // No event handling
+    add_component(entity, EventHandler { 
+        handles_collision: false, 
+        handles_mouse: false 
+    });
+    
+    // Use view coordinates
+    add_component(entity, CoordinateSystem { system: CoordSystemType.View });
+    
+    // Order by layer
+    add_component(entity, VisualOrder { 
+        order_type: OrderType.Layer,
+        layer: 0
+    });
+}
+*/
+
+// Example: Create a sky entity (sky, background, horizon)
+// Old way (2001): ent_createlayer with ENTITY* struct, flags2 SHOW flag
+// New way: create entity, add components
+/*
+fn create_sky_entity(): void {
+    let entity = create_entity();
+    
+    // Mixed coordinates (view position + world rotation)
+    add_component(entity, SkyPosition { 
+        view_x: 0, view_y: 0, view_z: 0,
+        world_rotation_x: 0, world_rotation_y: 0, world_rotation_z: 0
+    });
+    
+    // Sky model
+    add_component(entity, Model { mesh: "sky.obj" });
+    
+    // Render in level background
+    add_component(entity, RenderLayer { layer: RenderLayerType.LevelBackground });
+    
+    // Hidden by default (set SHOW flag = set is_visible to true)
+    add_component(entity, Visible { is_visible: false });
+    
+    // No event handling
+    add_component(entity, EventHandler { 
+        handles_collision: false, 
+        handles_mouse: false 
+    });
+    
+    // Use mixed coordinates
+    add_component(entity, CoordinateSystem { system: CoordSystemType.Mixed });
+    
+    // Order by layer, then view distance
+    add_component(entity, VisualOrder { 
+        order_type: OrderType.Both,
+        layer: 0,
+        view_distance: 0.0
+    });
+}
+*/
+
+// ============================================================================
+// Example: Query-Based Rendering Systems
+// ============================================================================
+
+// Render level entities
+// Old way (2001): Iterate through level entities, check INVISIBLE flag
+// New way: Query for entities with RenderLayer.Level and Visible
+/*
+@system(render_level)
+fn render_level_entities(q: query<Position, Model, RenderLayer, Visible>): void {
+    for entity in q {
+        // Only render if layer is Level and visible
+        if entity.RenderLayer.layer == RenderLayerType.Level && entity.Visible.is_visible {
+            draw_model(entity.Model.mesh, entity.Position);
+        }
+    }
+}
+*/
+
+// Render view entities (UI)
+// Old way (2001): Iterate through view entities, check flags2 SHOW flag
+// New way: Query for entities with RenderLayer.ScreenForeground and Visible
+/*
+@system(render_ui, after = render_level)
+fn render_view_entities(q: query<ViewPosition, Sprite, RenderLayer, Visible, VisualOrder>): void {
+    for entity in q {
+        if entity.RenderLayer.layer == RenderLayerType.ScreenForeground && entity.Visible.is_visible {
+            // Sort by layer, then render
+            draw_sprite(entity.Sprite.texture, entity.ViewPosition, entity.VisualOrder.layer);
+        }
+    }
+}
+*/
+
+// Render sky entities
+// Old way (2001): Iterate through sky entities, check flags2 SHOW flag
+// New way: Query for entities with RenderLayer.LevelBackground and Visible
+/*
+@system(render_sky, before = render_level)
+fn render_sky_entities(q: query<SkyPosition, Model, RenderLayer, Visible, VisualOrder>): void {
+    for entity in q {
+        if entity.RenderLayer.layer == RenderLayerType.LevelBackground && entity.Visible.is_visible {
+            // Render sky with mixed coordinates
+            draw_sky_model(entity.Model.mesh, entity.SkyPosition, entity.VisualOrder);
+        }
+    }
+}
+*/
+
+// ============================================================================
+// Notes
+// ============================================================================
+//
+// Benefits of this component-based approach:
+//
+// 1. Flexible: Entity can change category by adding/removing components
+//    - Level entity can become UI element by changing RenderLayer component
+//    - No need to recreate entity or change "type"
+//
+// 2. Consistent: Same component pattern everywhere
+//    - All entities use Visible component (not INVISIBLE vs SHOW flags)
+//    - All entities use RenderLayer component (not entity "type")
+//
+// 3. Queryable: Easy to find entities with specific combinations
+//    - query<RenderLayer, Visible> finds all visible entities
+//    - query<Position, EventHandler> finds all entities that handle events
+//
+// 4. Extensible: Add new components without changing entity "types"
+//    - Add Physics component for physics simulation
+//    - Add Animation component for animated entities
+//    - Add AI component for AI-controlled entities
+//
+// 5. Performance: Query only processes entities with required components
+//    - Render system only processes entities with RenderLayer + Visible
+//    - Collision system only processes entities with EventHandler.handles_collision
+//
+// ============================================================================
+

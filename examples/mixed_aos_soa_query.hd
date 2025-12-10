@@ -1,0 +1,89 @@
+// ============================================================================
+// Mixed AoS + SOA Query Example
+// ============================================================================
+// This example demonstrates using both AoS (Array-of-Structures) and SOA
+// (Structure-of-Arrays) components in the same query.
+//
+// Key Points:
+//   - Position is AoS: stored as array of Position structs
+//   - Velocity is SOA: stored as separate arrays for x, y, z
+//   - Same syntax for both: entity.Position.x and entity.Velocity.x
+//   - Compiler generates different access patterns automatically
+// ============================================================================
+
+// AoS Component (Array-of-Structures)
+// Stored as: [Position1, Position2, Position3, ...]
+component Position {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+// SOA Component (Structure-of-Arrays)
+// Stored as: x: [x1, x2, x3, ...], y: [y1, y2, y3, ...], z: [z1, z2, z3, ...]
+component_soa Velocity {
+    x: [f32],  // Array of X velocities
+    y: [f32],  // Array of Y velocities
+    z: [f32]   // Array of Z velocities
+}
+
+// Physics update function using mixed query
+fn update_physics(q: query<Position, Velocity>): void {
+    let delta_time: f32 = 0.016;  // 60 FPS
+    
+    for entity in q {
+        // AoS access: entity.Position.x
+        // Generated as: q.positions[entity_index].x
+        
+        // SOA access: entity.Velocity.x
+        // Generated as: q.velocities.x[entity_index]
+        
+        // Update position based on velocity
+        // Note: Using regular assignment since += not yet implemented
+        let new_x: f32 = entity.Position.x + entity.Velocity.x * delta_time;
+        let new_y: f32 = entity.Position.y + entity.Velocity.y * delta_time;
+        let new_z: f32 = entity.Position.z + entity.Velocity.z * delta_time;
+        entity.Position.x = new_x;
+        entity.Position.y = new_y;
+        entity.Position.z = new_z;
+    }
+}
+
+// Example: Print positions and velocities
+fn print_entities(q: query<Position, Velocity>): void {
+    for entity in q {
+        print("Position: (");
+        print(entity.Position.x);
+        print(", ");
+        print(entity.Position.y);
+        print(", ");
+        print(entity.Position.z);
+        print(") Velocity: (");
+        print(entity.Velocity.x);
+        print(", ");
+        print(entity.Velocity.y);
+        print(", ");
+        print(entity.Velocity.z);
+        print(")\n");
+    }
+}
+
+fn main(): void {
+    print("Mixed AoS + SOA Query Example\n");
+    print("============================\n");
+    print("\n");
+    print("This example shows:\n");
+    print("  1. AoS component (Position): stored as array of structs\n");
+    print("  2. SOA component (Velocity): stored as structure of arrays\n");
+    print("  3. Same syntax for both: entity.Position.x and entity.Velocity.x\n");
+    print("  4. Compiler generates different access patterns:\n");
+    print("     - AoS: q.positions[i].x\n");
+    print("     - SOA: q.velocities.x[i]\n");
+    print("\n");
+    print("Benefits of SOA:\n");
+    print("  - Cache-friendly when iterating over many entities\n");
+    print("  - Better for vectorization (SIMD)\n");
+    print("  - GPU-friendly (CUDA/OptiX prefer SOA)\n");
+    print("\n");
+}
+

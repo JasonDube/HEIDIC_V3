@@ -7,11 +7,14 @@ mod parser;
 mod ast;
 mod type_checker;
 mod codegen;
+mod error;
+mod hot_reload;
 
 use lexer::Lexer;
 use parser::Parser;
 use type_checker::TypeChecker;
 use codegen::CodeGenerator;
+use error::ErrorReporter;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -61,8 +64,11 @@ fn compile_file(file_path: &str) -> Result<()> {
     let mut parser = Parser::new(tokens);
     let ast = parser.parse()?;
     
-    // Type checking
+    // Type checking with error reporting
+    let error_reporter = ErrorReporter::new(file_path)
+        .with_context(|| format!("Failed to initialize error reporter for: {}", file_path))?;
     let mut type_checker = TypeChecker::new();
+    type_checker.set_error_reporter(error_reporter);
     type_checker.check(&ast)?;
     
     // Code generation
@@ -84,8 +90,27 @@ fn compile_file(file_path: &str) -> Result<()> {
         .with_context(|| format!("Failed to write output file: {}", output_path.display()))?;
     
     println!("Compiled {} to {}", file_path, output_path.display());
+    
+    // Generate DLL files for hot-reloadable systems
+    let hot_systems = codegen.get_hot_systems();
+    if !hot_systems.is_empty() {
+        println!("\nGenerating hot-reloadable system DLLs...");
+        for system in hot_systems {
+            let dll_cpp = codegen.generate_hot_system_dll(system);
+            let dll_name = format!("{}_hot.dll.cpp", system.name.to_lowercase());
+            let dll_path = source_dir.join(&dll_name);
+            
+            fs::write(&dll_path, dll_cpp)
+                .with_context(|| format!("Failed to write DLL file: {}", dll_path.display()))?;
+            
+            println!("  Generated: {}", dll_path.display());
+            println!("  Compile DLL with: g++ -std=c++17 -shared -o {}.dll {} -Wl,--out-implib,{}.a", 
+                     system.name.to_lowercase(), dll_path.display(), system.name.to_lowercase());
+        }
+    }
+    
     let exe_name = source_path.file_stem().unwrap().to_str().unwrap();
-    println!("Compile with: g++ -std=c++17 -O3 {} -o {}", 
+    println!("\nCompile main with: g++ -std=c++17 -O3 {} -o {}", 
              output_path.display(), exe_name);
     
     Ok(())

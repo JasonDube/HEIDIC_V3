@@ -1,0 +1,97 @@
+// Hot-Reload Test Example
+// This demonstrates hot-reloading by changing the rotation speed of a triangle
+// 
+// Instructions:
+// 1. Run the game
+// 2. Edit the rotation_speed value in the @hot system below
+// 3. Save the file
+// 4. The game will detect the change and reload automatically
+// 5. Watch the triangle spin faster/slower!
+
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer(window: GLFWwindow): i32;
+extern fn heidic_render_frame(window: GLFWwindow): void;
+extern fn heidic_set_rotation_speed(speed: f32): void;
+extern fn heidic_cleanup_renderer(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+// Hot-reloadable system for rotation
+// Change rotation_speed and save - it will reload automatically!
+@hot
+system(rotation) {
+    fn get_rotation_speed(): f32 {
+        // Try changing this value while the game is running!
+        // Start with 1.0, then try 2.0, 5.0, 0.5, etc.
+        let rotation_speed: f32 = 40.30;
+        return rotation_speed;
+    }
+}
+
+fn main(): void {
+    print("=== Hot-Reload Test ===\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+    
+    print("Creating window...\n");
+    let window: GLFWwindow = glfwCreateWindow(800, 600, "Hot-Reload Test - Edit rotation_speed!", 0, 0);
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Initializing Vulkan renderer...\n");
+
+    let renderer_init: i32 = heidic_init_renderer(window);
+    if renderer_init == 0 {
+        print("Failed to initialize renderer!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("Renderer initialized!\n");
+    print("Starting render loop...\n");
+    print("\n");
+    print("=== HOT-RELOAD INSTRUCTIONS ===\n");
+    print("1. Edit rotation_speed in the @hot system (line ~20)\n");
+    print("2. Save the file\n");
+    print("3. Watch the triangle spin faster/slower!\n");
+    print("4. Press ESC or close window to exit\n");
+    print("\n");
+
+    let time: f32 = 0.0;
+    
+    while glfwWindowShouldClose(window) == 0 {
+        glfwPollEvents();
+
+        if glfwGetKey(window, 256) == 1 { // ESC key
+            glfwSetWindowShouldClose(window, 1);
+        }
+
+        // Get rotation speed from hot-reloadable system
+        let rotation_speed: f32 = get_rotation_speed();
+        heidic_set_rotation_speed(rotation_speed); // pass speed to renderer for live updates
+        
+        heidic_render_frame(window);
+        heidic_sleep_ms(16); // ~60 FPS cap
+        
+        time = time + 0.016; // Increment time
+    }
+
+    print("Cleaning up...\n");
+    heidic_cleanup_renderer();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Done!\n");
+}

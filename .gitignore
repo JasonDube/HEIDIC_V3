@@ -1,0 +1,110 @@
+# Rust/Cargo
+/target/
+**/*.rs.bk
+Cargo.lock
+*.pdb
+
+# C++ Build artifacts
+*.o
+*.obj
+*.exe
+*.dll
+*.dylib
+*.so
+*.a
+*.lib
+*.exp
+*.ilk
+*.pdb
+*.suo
+*.user
+*.sdf
+*.opensdf
+*.sln.docstates
+.vs/
+build/
+Build/
+out/
+*.vcxproj.user
+*.vcxproj.filters
+*.vcxproj
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# HEIDIC specific
+*.cpp
+*.spv
+*.dll.old
+*.dll.new
+*.a
+compile_errors.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.code-workspace
+
+# Editor backup files
+*~
+*.bak
+*.tmp
+
+# H_SCRIBE projects (user-generated code)
+H_SCRIBE/PROJECTS/**/*.cpp
+H_SCRIBE/PROJECTS/**/*.exe
+H_SCRIBE/PROJECTS/**/*.dll
+H_SCRIBE/PROJECTS/**/*.dll.old
+H_SCRIBE/PROJECTS/**/*.dll.new
+H_SCRIBE/PROJECTS/**/*.a
+# But keep .hd files (source code)
+!H_SCRIBE/PROJECTS/**/*.hd
+
+# Examples build artifacts
+examples/**/*.exe
+examples/**/*.dll
+examples/**/*.cpp
+examples/**/*.spv
+# But keep .hd and .glsl files (source code)
+!examples/**/*.hd
+!examples/**/*.glsl
+
+# Vulkan reference (large third-party repository)
+vulkan_reference/
+# But keep our own vulkan files
+!vulkan/
+!vulkan/**/*
+
+# User questions/logs
+user_questions.md
+
+# Ollama models (stored elsewhere by Ollama)
+# No need to track these
+
+# H_SCRIBE empty template
+H_SCRIBE/empty.hd
+

@@ -6,4 +6,6 @@ edition = "2021"
 [dependencies]
 logos = "0.14"
 anyhow = "1.0"
+notify = "6.1"
+windows-sys = { version = "0.48", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
 

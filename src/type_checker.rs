@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::error::{SourceLocation, ErrorReporter};
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 
@@ -7,6 +8,8 @@ pub struct TypeChecker {
     functions: HashMap<String, FunctionDef>,
     structs: HashMap<String, StructDef>,
     components: HashMap<String, ComponentDef>,
+    errors: Vec<(SourceLocation, String, Option<String>)>,  // (location, message, suggestion)
+    error_reporter: Option<ErrorReporter>,
 }
 
 impl TypeChecker {
@@ -16,6 +19,19 @@ impl TypeChecker {
             functions: HashMap::new(),
             structs: HashMap::new(),
             components: HashMap::new(),
+            errors: Vec::new(),
+            error_reporter: None,
+        }
+    }
+    
+    pub fn set_error_reporter(&mut self, reporter: ErrorReporter) {
+        self.error_reporter = Some(reporter);
+    }
+    
+    fn report_error(&mut self, location: SourceLocation, message: String, suggestion: Option<String>) {
+        self.errors.push((location, message.clone(), suggestion.clone()));
+        if let Some(ref reporter) = self.error_reporter {
+            reporter.report_error(location, &message, suggestion.as_deref());
         }
     }
     
@@ -27,6 +43,24 @@ impl TypeChecker {
                     self.structs.insert(s.name.clone(), s.clone());
                 }
                 Item::Component(c) => {
+                    // Validate SOA components: all fields must be arrays
+                    if c.is_soa {
+                        for field in &c.fields {
+                            if !matches!(field.ty, Type::Array(_)) {
+                                let location = SourceLocation::unknown(); // TODO: get from AST
+                                self.report_error(
+                                    location,
+                                    format!("SOA component '{}' field '{}' must be an array type (use [Type] instead of Type)", 
+                                            c.name, field.name),
+                                    Some(format!("Change '{}: {}' to '{}: [{}]'", 
+                                                 field.name, 
+                                                 self.type_to_string(&field.ty),
+                                                 field.name,
+                                                 self.type_to_string(&field.ty))),
+                                );
+                            }
+                        }
+                    }
                     self.components.insert(c.name.clone(), c.clone());
                 }
                 Item::Function(f) => {
@@ -47,6 +81,9 @@ impl TypeChecker {
                         self.functions.insert(func.name.clone(), func.clone());
                     }
                 }
+                Item::Shader(_) => {
+                    // Shaders are validated during codegen (file existence, compilation)
+                }
             }
         }
         
@@ -65,7 +102,34 @@ impl TypeChecker {
             }
         }
         
+        // Report all errors if any
+        if !self.errors.is_empty() {
+            bail!("Found {} error(s)", self.errors.len());
+        }
+        
         Ok(())
+    }
+    
+    fn type_to_string(&self, ty: &Type) -> String {
+        match ty {
+            Type::I32 => "i32".to_string(),
+            Type::I64 => "i64".to_string(),
+            Type::F32 => "f32".to_string(),
+            Type::F64 => "f64".to_string(),
+            Type::Bool => "bool".to_string(),
+            Type::String => "string".to_string(),
+            Type::Array(elem) => format!("[{}]", self.type_to_string(elem)),
+            Type::Struct(name) => name.clone(),
+            Type::Component(name) => name.clone(),
+            Type::Query(components) => {
+                let comp_names: Vec<String> = components.iter()
+                    .map(|c| self.type_to_string(c))
+                    .collect();
+                format!("query<{}>", comp_names.join(", "))
+            },
+            Type::Void => "void".to_string(),
+            _ => format!("{:?}", ty),
+        }
     }
     
     fn check_function(&mut self, func: &FunctionDef) -> Result<()> {
@@ -88,9 +152,21 @@ impl TypeChecker {
         match stmt {
             Statement::Let { name, ty, value } => {
                 let value_type = self.check_expression(value)?;
+                let location = SourceLocation::unknown(); // TODO: get from AST
+                
                 if let Some(declared_type) = ty {
                     if !self.types_compatible(declared_type, &value_type) {
-                        bail!("Type mismatch: expected {:?}, got {:?}", declared_type, value_type);
+                        let suggestion = format!("Use a {} variable or convert: {} = {}", 
+                                                  self.type_to_string(declared_type),
+                                                  name,
+                                                  self.suggest_value_for_type(declared_type));
+                        self.report_error(
+                            location,
+                            format!("Type mismatch: cannot assign '{}' to '{}'", 
+                                   self.type_to_string(&value_type),
+                                   self.type_to_string(declared_type)),
+                            Some(suggestion),
+                        );
                     }
                     self.symbols.insert(name.clone(), declared_type.clone());
                 } else {
@@ -100,14 +176,31 @@ impl TypeChecker {
             Statement::Assign { target, value } => {
                 let target_type = self.check_expression(target)?;
                 let value_type = self.check_expression(value)?;
+                let location = SourceLocation::unknown(); // TODO: get from AST
+                
                 if !self.types_compatible(&target_type, &value_type) {
-                    bail!("Type mismatch in assignment");
+                    let suggestion = format!("Ensure types match: {} should be {}", 
+                                            self.type_to_string(&value_type),
+                                            self.type_to_string(&target_type));
+                    self.report_error(
+                        location,
+                        format!("Type mismatch in assignment: cannot assign '{}' to '{}'", 
+                               self.type_to_string(&value_type),
+                               self.type_to_string(&target_type)),
+                        Some(suggestion),
+                    );
                 }
             }
             Statement::If { condition, then_block, else_block } => {
                 let cond_type = self.check_expression(condition)?;
+                let location = SourceLocation::unknown(); // TODO: get from AST
+                
                 if !matches!(cond_type, Type::Bool) {
-                    bail!("If condition must be bool");
+                    self.report_error(
+                        location,
+                        format!("If condition must be bool, got '{}'", self.type_to_string(&cond_type)),
+                        Some("Use a boolean expression: if (condition == true) or if (x > 0)".to_string()),
+                    );
                 }
                 for stmt in then_block {
                     self.check_statement(stmt)?;
@@ -120,11 +213,43 @@ impl TypeChecker {
             }
             Statement::While { condition, body } => {
                 let cond_type = self.check_expression(condition)?;
+                let location = SourceLocation::unknown(); // TODO: get from AST
+                
                 if !matches!(cond_type, Type::Bool) {
-                    bail!("While condition must be bool");
+                    self.report_error(
+                        location,
+                        format!("While condition must be bool, got '{}'", self.type_to_string(&cond_type)),
+                        Some("Use a boolean expression: while (condition == true) or while (x > 0)".to_string()),
+                    );
                 }
                 for stmt in body {
                     self.check_statement(stmt)?;
+                }
+            }
+            Statement::For { iterator, collection, body } => {
+                // Check that collection is a query type
+                let collection_type = self.check_expression(collection)?;
+                let location = SourceLocation::unknown(); // TODO: get from AST
+                
+                if let Type::Query(component_types) = collection_type {
+                    // Add iterator to symbol table as an "entity" type
+                    // For now, we'll use a special marker - in codegen we'll handle entity access
+                    // Store the query components for codegen
+                    self.symbols.insert(iterator.clone(), Type::Query(component_types.clone()));
+                    
+                    // Check body with iterator in scope
+                    for stmt in body {
+                        self.check_statement(stmt)?;
+                    }
+                    
+                    // Remove iterator from scope after loop
+                    self.symbols.remove(iterator);
+                } else {
+                    self.report_error(
+                        location,
+                        format!("For loop collection must be a query type, got '{}'", self.type_to_string(&collection_type)),
+                        Some("Use a query: for entity in query<Position, Velocity>".to_string()),
+                    );
                 }
             }
             Statement::Loop { body } => {
@@ -147,6 +272,18 @@ impl TypeChecker {
             }
         }
         Ok(())
+    }
+    
+    fn suggest_value_for_type(&self, ty: &Type) -> String {
+        match ty {
+            Type::I32 => "0".to_string(),
+            Type::I64 => "0".to_string(),
+            Type::F32 => "0.0".to_string(),
+            Type::F64 => "0.0".to_string(),
+            Type::Bool => "true".to_string(),
+            Type::String => "\"\"".to_string(),
+            _ => format!("/* {} value */", self.type_to_string(ty)),
+        }
     }
     
     fn check_expression(&self, expr: &Expression) -> Result<Type> {
@@ -281,7 +418,7 @@ impl TypeChecker {
                     }
                     "glfwWindowHint" => {
                         if args.len() != 2 {
-                            bail!("glfwWindowHint() takes 2 arguments: hint, value");
+                            bail!("glfwWindowHint() takes 2 arguments");
                         }
                         self.check_expression(&args[0])?;
                         self.check_expression(&args[1])?;
@@ -411,8 +548,6 @@ impl TypeChecker {
             // GLFW types
             (Type::GLFWwindow, Type::GLFWwindow) => true,
             (Type::GLFWbool, Type::GLFWbool) => true,
-            (Type::GLFWbool, Type::I32) => true, // GLFWbool is int32_t
-            (Type::I32, Type::GLFWbool) => true,
             // Math types
             (Type::Vec2, Type::Vec2) => true,
             (Type::Vec3, Type::Vec3) => true,
@@ -422,4 +557,3 @@ impl TypeChecker {
         }
     }
 }
-

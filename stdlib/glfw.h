@@ -36,5 +36,16 @@
 // We don't need to redeclare them - just use GLFW's native declarations
 // The functions are available via the GLFW header
 
+// Common GLFW functions that can be called from HEIDIC:
+// - glfwInit(): i32
+// - glfwTerminate(): void
+// - glfwCreateWindow(width: i32, height: i32, title: *const u8, monitor: *void, share: *void): GLFWwindow
+// - glfwDestroyWindow(window: GLFWwindow): void
+// - glfwWindowShouldClose(window: GLFWwindow): i32
+// - glfwSetWindowShouldClose(window: GLFWwindow, value: i32): void
+// - glfwPollEvents(): void
+// - glfwGetKey(window: GLFWwindow, key: i32): i32
+// - glfwGetTime(): f64  // Returns time in seconds since GLFW was initialized
+
 #endif // EDEN_GLFW_H
 

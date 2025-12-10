@@ -1,0 +1,68 @@
+// ============================================================================
+// HEIDIC Query Iteration Example - Beginner Friendly
+// ============================================================================
+// This example demonstrates how to use ECS queries with the new "for entity in q" syntax.
+// 
+// What is an ECS Query?
+// - A query finds all entities (game objects) that have specific components (data)
+// - Example: query<Position, Velocity> finds all entities with BOTH Position AND Velocity
+//
+// What is a Component?
+// - A component is a piece of data attached to an entity
+// - Position = where something is (x, y, z coordinates)
+// - Velocity = how fast it's moving (x, y, z speed)
+//
+// ============================================================================
+
+// Step 1: Define Components
+// Components are like "data containers" that hold information about entities
+component Position {
+    x: f32,  // X coordinate
+    y: f32,  // Y coordinate
+    z: f32   // Z coordinate
+}
+
+component Velocity {
+    x: f32,  // Speed in X direction
+    y: f32,  // Speed in Y direction
+    z: f32   // Speed in Z direction
+}
+
+// Step 2: Create a function that uses a query
+// This function will update the position of all entities that have both Position and Velocity
+fn update_physics(q: query<Position, Velocity>): void {
+    // The "for entity in q" syntax iterates over all entities that match the query
+    // In this case, it finds all entities with BOTH Position AND Velocity components
+    for entity in q {
+        // Each "entity" in the loop has access to its Position and Velocity components
+        // We can update the position based on velocity (simple physics)
+        
+        // Update X position: new_x = old_x + velocity_x * time
+        entity.Position.x = entity.Position.x + entity.Velocity.x * 0.016;
+        
+        // Update Y position: new_y = old_y + velocity_y * time
+        entity.Position.y = entity.Position.y + entity.Velocity.y * 0.016;
+        
+        // Update Z position: new_z = old_z + velocity_z * time
+        entity.Position.z = entity.Position.z + entity.Velocity.z * 0.016;
+        
+        // Note: 0.016 is approximately 1/60 second (60 FPS)
+        // In a real game, you'd use actual delta_time
+    }
+}
+
+// Step 3: Main function to demonstrate
+fn main(): void {
+    print("=== HEIDIC Query Iteration Example ===\n");
+    print("This example shows how to iterate over entities with queries.\n");
+    print("\n");
+    print("Query: query<Position, Velocity>\n");
+    print("This finds all entities with BOTH Position AND Velocity components.\n");
+    print("\n");
+    print("The 'for entity in q' loop iterates over each matching entity.\n");
+    print("Inside the loop, you can access entity.Position and entity.Velocity.\n");
+    print("\n");
+    print("Note: This is a compile-time example.\n");
+    print("In a real game, you'd create entities and add components to them.\n");
+}
+
