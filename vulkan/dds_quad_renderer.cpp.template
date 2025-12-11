@@ -1,0 +1,74 @@
+// DDS Quad Renderer Implementation
+// Add this to the end of eden_vulkan_helpers.cpp
+
+// Static variables for DDS quad rendering
+static VkImage g_ddsQuadImage = VK_NULL_HANDLE;
+static VkImageView g_ddsQuadImageView = VK_NULL_HANDLE;
+static VkSampler g_ddsQuadSampler = VK_NULL_HANDLE;
+static VkDeviceMemory g_ddsQuadImageMemory = VK_NULL_HANDLE;
+static VkPipeline g_ddsQuadPipeline = VK_NULL_HANDLE;
+static VkPipelineLayout g_ddsQuadPipelineLayout = VK_NULL_HANDLE;
+static VkDescriptorSetLayout g_ddsQuadDescriptorSetLayout = VK_NULL_HANDLE;
+static VkDescriptorPool g_ddsQuadDescriptorPool = VK_NULL_HANDLE;
+static VkDescriptorSet g_ddsQuadDescriptorSet = VK_NULL_HANDLE;
+static VkBuffer g_ddsQuadVertexBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_ddsQuadVertexBufferMemory = VK_NULL_HANDLE;
+static bool g_ddsQuadInitialized = false;
+
+// Fullscreen quad vertices (NDC coordinates, covers entire screen)
+struct QuadVertex {
+    float pos[2];  // X, Y
+    float uv[2];   // Texture coordinates
+};
+
+static const QuadVertex g_quadVertices[] = {
+    {{-1.0f, -1.0f}, {0.0f, 0.0f}},  // Bottom-left
+    {{ 1.0f, -1.0f}, {1.0f, 0.0f}},  // Bottom-right
+    {{ 1.0f,  1.0f}, {1.0f, 1.0f}},  // Top-right
+    {{-1.0f,  1.0f}, {0.0f, 1.0f}}   // Top-left
+};
+
+static const uint16_t g_quadIndices[] = {
+    0, 1, 2,
+    2, 3, 0
+};
+
+extern "C" int heidic_init_renderer_dds_quad(GLFWwindow* window, const char* ddsPath) {
+    if (window == nullptr || ddsPath == nullptr) {
+        std::cerr << "[DDS] ERROR: Invalid parameters!" << std::endl;
+        return 0;
+    }
+    
+    // Initialize base renderer
+    if (heidic_init_renderer(window) == 0) {
+        return 0;
+    }
+    
+    std::cout << "[DDS] Loading texture: " << ddsPath << std::endl;
+    
+    // Load DDS file
+    DDSData ddsData = load_dds(ddsPath);
+    if (ddsData.format == VK_FORMAT_UNDEFINED) {
+        std::cerr << "[DDS] ERROR: Failed to load DDS file: " << ddsPath << std::endl;
+        return 0;
+    }
+    
+    std::cout << "[DDS] Loaded: " << ddsData.width << "x" << ddsData.height 
+              << ", Format: " << ddsData.format << std::endl;
+    
+    // Use the test helper to load texture (implement inline here for now)
+    // ... (full implementation to follow)
+    
+    // For now, return success - full implementation next
+    g_ddsQuadInitialized = true;
+    return 1;
+}
+
+extern "C" void heidic_render_dds_quad(GLFWwindow* window) {
+    // Implementation to follow
+}
+
+extern "C" void heidic_cleanup_renderer_dds_quad() {
+    // Cleanup implementation
+}
+

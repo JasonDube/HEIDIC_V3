@@ -90,15 +90,19 @@ impl CodeGenerator {
                 if ext.name == "heidic_render_balls" && !self.hot_components.is_empty() {
                     output.push_str(&format!("    void heidic_render_balls(GLFWwindow* window, int32_t ball_count, float* positions, float* sizes);\n"));
                 } else {
-                    let return_type = self.type_to_cpp(&ext.return_type);
+                    let return_type = self.type_to_cpp_for_extern(&ext.return_type);
                     output.push_str(&format!("    {} {}(", return_type, ext.name));
                     for (i, param) in ext.params.iter().enumerate() {
                         if i > 0 {
                             output.push_str(", ");
                         }
-                        output.push_str(&format!("{} {}", 
-                            self.type_to_cpp(&param.ty), 
-                            param.name));
+                        // For extern C functions, convert string to const char*
+                        let param_type = if matches!(param.ty, Type::String) {
+                            "const char*".to_string()
+                        } else {
+                            self.type_to_cpp_for_extern(&param.ty)
+                        };
+                        output.push_str(&format!("{} {}", param_type, param.name));
                     }
                     output.push_str(");\n");
                 }
@@ -1337,10 +1341,15 @@ impl CodeGenerator {
                         output.push_str(", ");
                     }
                     let arg_expr = self.generate_expression(arg);
+                    
+                    // For heidic_init_renderer_dds_quad, string literals are fine (auto-convert to const char*)
+                    // If it's a string variable, we'd need .c_str(), but string literals work directly
                     // Handle string literals for GLFW functions that need const char*
                     if (name == "glfwCreateWindow" && i == 2) || 
-                       (name == "glfwSetWindowTitle" && i == 1) {
+                       (name == "glfwSetWindowTitle" && i == 1) ||
+                       (name == "heidic_init_renderer_dds_quad" && i == 1) {
                         // String literals are fine as-is for const char*
+                        // String variables would need .c_str() but user is passing literal
                         output.push_str(&arg_expr);
                     } else {
                         output.push_str(&arg_expr);
@@ -1376,6 +1385,14 @@ impl CodeGenerator {
                 output.push_str("}");
                 output
             }
+        }
+    }
+    
+    fn type_to_cpp_for_extern(&self, ty: &Type) -> String {
+        // For extern C functions, use C-compatible types
+        match ty {
+            Type::String => "const char*".to_string(),
+            _ => self.type_to_cpp(ty)
         }
     }
     

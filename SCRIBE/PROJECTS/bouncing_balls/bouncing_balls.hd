@@ -1,0 +1,126 @@
+// HEIDIC Project: bouncing_balls
+// Hot-reload test case: System, Shader, and Component hot-reloading
+// This project demonstrates all three types of hot-reload with bouncing balls
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer_balls(window: GLFWwindow): i32;
+extern fn heidic_render_balls(window: GLFWwindow, ball_count: i32): void;
+extern fn heidic_cleanup_renderer_balls(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+// Hot-reloadable components
+// Try adding fields like: size: f32 = 1.0, or color: Vec3 = Vec3(1.0, 0.0, 0.0)
+@hot
+component Position {
+    x: f32,
+    y: f32,
+    z: f32,
+    size: f32,
+    bloat: f64
+    
+}
+
+@hot
+component Velocity {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+// Hot-reloadable movement system
+// Edit this to change movement patterns: random, orbit, sine wave, etc.
+// Note: For now, movement is handled in main() - once ECS is integrated, 
+// we'll use queries to update component data directly
+@hot
+system(movement) {
+    fn get_movement_speed(): f32 {
+        // Can hot-reload this to change movement speed
+        let speed: f32 = 1.0;
+        return speed;
+    }
+}
+
+// Hot-reloadable shaders
+@hot
+shader vertex "shaders/ball.vert" {
+}
+
+@hot
+shader fragment "shaders/ball.frag" {
+}
+
+// Note: Once we have entity storage, we'll use actual entities with Position/Velocity components
+// For now, we use simple arrays to store ball data
+
+fn main(): void {
+    print("=== bouncing_balls - Hot-Reload Test Case ===\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+    
+    print("Creating window (800x600)...\n");
+    let window: GLFWwindow = glfwCreateWindow(800, 600, "bouncing_balls - Hot-Reload Test", 0, 0);
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Initializing Vulkan renderer for balls...\n");
+
+    let renderer_init: i32 = heidic_init_renderer_balls(window);
+    if renderer_init == 0 {
+        print("Failed to initialize renderer!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("Renderer initialized!\n");
+    print("Creating initial balls...\n");
+    
+    // Number of balls to render
+    let ball_count: i32 = 5;
+    
+    // Note: Ball positions/velocities are managed internally in C++ for now
+    // Once ECS is integrated, we'll use actual entities with Position/Velocity components
+    
+    print("Starting render loop...\n");
+    print("Press ESC or close the window to exit.\n");
+    print("\n");
+    print("=== HOT-RELOAD TESTING ===\n");
+    print("1. Edit @hot system to change movement patterns\n");
+    print("2. Edit shaders to change visual appearance\n");
+    print("3. Edit @hot components to add/remove fields\n");
+    print("4. Use Hotload button to see changes instantly!\n");
+    print("\n");
+    
+    while glfwWindowShouldClose(window) == 0 {
+        glfwPollEvents();
+
+        if glfwGetKey(window, 256) == 1 { // ESC key
+            glfwSetWindowShouldClose(window, 1);
+        }
+
+        // Render all balls
+        // Note: For now, ball positions/velocities are managed in C++
+        // Once ECS is integrated, we'll update entities here and pass data to renderer
+        heidic_render_balls(window, ball_count);
+        heidic_sleep_ms(16); // ~60 FPS cap
+    }
+
+    print("Cleaning up...\n");
+    heidic_cleanup_renderer_balls();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Program exited successfully.\n");
+    print("Done!\n");
+}

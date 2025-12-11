@@ -1,0 +1,16 @@
+# H_SCRIBE - HEIDIC Script Editor Python Dependencies
+# 
+# Install with: pip install -r requirements.txt
+#
+# Note: This editor requires Python 3.7+
+
+# Required dependencies
+pygame>=2.0.0        # GUI framework for the editor
+
+# Optional dependencies (for enhanced features)
+watchdog>=2.0.0      # File system watching for automatic hot-reload
+                     # If not installed, file watching will be disabled but editor still works
+
+# Note: tkinter is used for clipboard operations but comes bundled with Python on Windows
+# On Linux, you may need: sudo apt-get install python3-tk
+

@@ -1,0 +1,65 @@
+// PNG Loader Test Project
+// Tests PNG texture loading and rendering on a fullscreen quad
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer_png_quad(window: GLFWwindow, pngPath: string): i32;
+extern fn heidic_render_png_quad(window: GLFWwindow): void;
+extern fn heidic_cleanup_renderer_png_quad(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+fn main(): void {
+    print("=== PNG Loader Test ===\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+    
+    print("Creating window (800x600)...\n");
+    let window: GLFWwindow = glfwCreateWindow(800, 600, "PNG Loader Test", 0, 0);
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Initializing PNG renderer...\n");
+
+    // Load PNG from textures folder
+    let renderer_init: i32 = heidic_init_renderer_png_quad(window, "textures/test.png");
+    if renderer_init == 0 {
+        print("Failed to initialize PNG renderer!\n");
+        print("Make sure textures/test.png exists!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("PNG renderer initialized!\n");
+    print("Starting render loop...\n");
+    print("You should see the PNG texture on a fullscreen quad!\n");
+    print("Press ESC or close the window to exit.\n");
+
+    while glfwWindowShouldClose(window) == 0 {
+        glfwPollEvents();
+
+        if glfwGetKey(window, 256) == 1 { // ESC key
+            glfwSetWindowShouldClose(window, 1);
+        }
+
+        heidic_render_png_quad(window);
+        heidic_sleep_ms(16); // ~60 FPS cap
+    }
+
+    print("Cleaning up...\n");
+    heidic_cleanup_renderer_png_quad();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Done!\n");
+}

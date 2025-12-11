@@ -11,6 +11,18 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
+#include <string>
+#include <memory>
+#include <cstddef>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+#include "../stdlib/dds_loader.h"
+#include "../stdlib/png_loader.h"
+#include "../stdlib/texture_resource.h"
+#include "../stdlib/mesh_resource.h"
 
 // ImGui includes (if available)
 #ifdef USE_IMGUI
@@ -32,24 +44,24 @@ struct UniformBufferObject {
     glm::mat4 proj;
 };
 
-// Global Vulkan state
-static VkInstance g_instance = VK_NULL_HANDLE;
-static VkPhysicalDevice g_physicalDevice = VK_NULL_HANDLE;
-static VkSurfaceKHR g_surface = VK_NULL_HANDLE;
-static VkDevice g_device = VK_NULL_HANDLE;
-static VkSwapchainKHR g_swapchain = VK_NULL_HANDLE;
-static VkRenderPass g_renderPass = VK_NULL_HANDLE;
-static VkPipeline g_pipeline = VK_NULL_HANDLE;
-static VkPipeline g_cubePipeline = VK_NULL_HANDLE;
-static VkPipelineLayout g_pipelineLayout = VK_NULL_HANDLE;
+// Global Vulkan state (accessible to TextureResource and other resource classes)
+VkInstance g_instance = VK_NULL_HANDLE;
+VkPhysicalDevice g_physicalDevice = VK_NULL_HANDLE;
+VkSurfaceKHR g_surface = VK_NULL_HANDLE;
+VkDevice g_device = VK_NULL_HANDLE;
+VkSwapchainKHR g_swapchain = VK_NULL_HANDLE;
+VkRenderPass g_renderPass = VK_NULL_HANDLE;
+VkPipeline g_pipeline = VK_NULL_HANDLE;
+VkPipeline g_cubePipeline = VK_NULL_HANDLE;
+VkPipelineLayout g_pipelineLayout = VK_NULL_HANDLE;
 // Vertex buffers for custom shaders (when they need vertex input)
-static VkBuffer g_triangleVertexBuffer = VK_NULL_HANDLE;
-static VkDeviceMemory g_triangleVertexBufferMemory = VK_NULL_HANDLE;
-static bool g_usingCustomShaders = false; // Track if we're using custom shaders that need vertex buffers
-static std::vector<VkFramebuffer> g_framebuffers;
-static VkCommandPool g_commandPool = VK_NULL_HANDLE;
-static std::vector<VkCommandBuffer> g_commandBuffers;
-static VkQueue g_graphicsQueue = VK_NULL_HANDLE;
+VkBuffer g_triangleVertexBuffer = VK_NULL_HANDLE;
+VkDeviceMemory g_triangleVertexBufferMemory = VK_NULL_HANDLE;
+bool g_usingCustomShaders = false; // Track if we're using custom shaders that need vertex buffers
+std::vector<VkFramebuffer> g_framebuffers;
+VkCommandPool g_commandPool = VK_NULL_HANDLE;
+std::vector<VkCommandBuffer> g_commandBuffers;
+VkQueue g_graphicsQueue = VK_NULL_HANDLE;
 static uint32_t g_graphicsQueueFamilyIndex = 0;
 static uint32_t g_currentFrame = 0;
 static VkExtent2D g_swapchainExtent = {};
@@ -1919,9 +1931,9 @@ extern "C" void heidic_render_frame_cube(GLFWwindow* window) {
     // Projection matrix
     float fov = 45.0f * 3.14159f / 180.0f;
     float aspect = (float)g_swapchainExtent.width / (float)g_swapchainExtent.height;
-    float near = 0.1f;
-    float far = 100.0f;
-    ubo.proj = mat4_perspective(fov, aspect, near, far);
+    float nearPlane = 0.1f;
+    float farPlane = 100.0f;
+    ubo.proj = mat4_perspective(fov, aspect, nearPlane, farPlane);
     
     // Vulkan clip space has inverted Y and half Z
     ubo.proj[1][1] *= -1.0f;
@@ -2502,12 +2514,12 @@ extern "C" void heidic_render_balls(GLFWwindow* window, int32_t ball_count, floa
     
     // Projection matrix
     float fov = 45.0f * 3.14159f / 180.0f;
-    float near = 0.1f;
-    float far = 100.0f;
+    float nearPlane = 0.1f;
+    float farPlane = 100.0f;
     
     UniformBufferObject ubo = {};
     ubo.view = mat4_lookat(eye, center, up);
-    ubo.proj = mat4_perspective(fov, aspect, near, far);
+    ubo.proj = mat4_perspective(fov, aspect, nearPlane, farPlane);
     ubo.proj[1][1] *= -1.0f;  // Vulkan clip space
     
     // Render each ball (using positions/sizes from ECS)
@@ -2582,5 +2594,2591 @@ extern "C" void heidic_cleanup_renderer_balls() {
     }
     g_ballsInitialized = false;
     // Note: We don't destroy base renderer resources here since they're shared
+}
+
+// ============================================================================
+// DDS Quad Renderer (for testing DDS loader)
+// ============================================================================
+
+// Static variables for DDS quad rendering
+static VkImage g_ddsQuadImage = VK_NULL_HANDLE;
+static VkImageView g_ddsQuadImageView = VK_NULL_HANDLE;
+static VkSampler g_ddsQuadSampler = VK_NULL_HANDLE;
+static VkDeviceMemory g_ddsQuadImageMemory = VK_NULL_HANDLE;
+static VkPipeline g_ddsQuadPipeline = VK_NULL_HANDLE;
+static VkPipelineLayout g_ddsQuadPipelineLayout = VK_NULL_HANDLE;
+static VkDescriptorSetLayout g_ddsQuadDescriptorSetLayout = VK_NULL_HANDLE;
+static VkDescriptorPool g_ddsQuadDescriptorPool = VK_NULL_HANDLE;
+static VkDescriptorSet g_ddsQuadDescriptorSet = VK_NULL_HANDLE;
+static VkBuffer g_ddsQuadVertexBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_ddsQuadVertexBufferMemory = VK_NULL_HANDLE;
+static VkBuffer g_ddsQuadIndexBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_ddsQuadIndexBufferMemory = VK_NULL_HANDLE;
+static VkShaderModule g_ddsQuadVertShaderModule = VK_NULL_HANDLE;
+static VkShaderModule g_ddsQuadFragShaderModule = VK_NULL_HANDLE;
+static bool g_ddsQuadInitialized = false;
+
+// Fullscreen quad vertices (NDC coordinates, covers entire screen)
+struct QuadVertex {
+    float pos[2];  // X, Y
+    float uv[2];   // Texture coordinates
+};
+
+static const QuadVertex g_quadVertices[] = {
+    {{-1.0f, -1.0f}, {0.0f, 0.0f}},  // Bottom-left
+    {{ 1.0f, -1.0f}, {1.0f, 0.0f}},  // Bottom-right
+    {{ 1.0f,  1.0f}, {1.0f, 1.0f}},  // Top-right
+    {{-1.0f,  1.0f}, {0.0f, 1.0f}}   // Top-left
+};
+
+static const uint16_t g_quadIndices[] = {
+    0, 1, 2,
+    2, 3, 0
+};
+
+// Helper to begin single-time command buffer (reuse existing pattern)
+static VkCommandBuffer beginSingleTimeCommands() {
+    VkCommandBufferAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = g_commandPool;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(g_device, &allocInfo, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    return commandBuffer;
+}
+
+// Helper to end single-time command buffer
+static void endSingleTimeCommands(VkCommandBuffer commandBuffer) {
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(g_graphicsQueue);
+
+    vkFreeCommandBuffers(g_device, g_commandPool, 1, &commandBuffer);
+}
+
+extern "C" int heidic_init_renderer_dds_quad(GLFWwindow* window, const char* ddsPath) {
+    if (window == nullptr || ddsPath == nullptr) {
+        std::cerr << "[DDS] ERROR: Invalid parameters!" << std::endl;
+        return 0;
+    }
+    
+    // Initialize base renderer (creates device, swapchain, etc.)
+    if (heidic_init_renderer(window) == 0) {
+        return 0;
+    }
+    
+    // Destroy triangle pipeline since we'll use our own
+    if (g_pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_pipeline, nullptr);
+        g_pipeline = VK_NULL_HANDLE;
+    }
+    
+    std::cout << "[DDS] Loading texture: " << ddsPath << std::endl;
+    
+    // Load DDS file
+    DDSData ddsData = load_dds(ddsPath);
+    if (ddsData.format == VK_FORMAT_UNDEFINED) {
+        std::cerr << "[DDS] ERROR: Failed to load DDS file: " << ddsPath << std::endl;
+        std::cerr << "[DDS] Make sure the file exists and is a valid DDS format" << std::endl;
+        return 0;
+    }
+    
+    std::cout << "[DDS] Loaded: " << ddsData.width << "x" << ddsData.height 
+              << ", Format: " << ddsData.format << ", Mipmaps: " << ddsData.mipmapCount << std::endl;
+    
+    // Create Vulkan image
+    VkImageCreateInfo imageInfo = {};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = ddsData.width;
+    imageInfo.extent.height = ddsData.height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = ddsData.mipmapCount;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = ddsData.format;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateImage(g_device, &imageInfo, nullptr, &g_ddsQuadImage) != VK_SUCCESS) {
+        std::cerr << "[DDS] ERROR: Failed to create image!" << std::endl;
+        return 0;
+    }
+
+    // Allocate memory for image
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements(g_device, g_ddsQuadImage, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    
+    if (allocInfo.memoryTypeIndex == UINT32_MAX || allocInfo.memoryTypeIndex == 0) {
+        std::cerr << "[DDS] ERROR: Failed to find suitable memory type!" << std::endl;
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        return 0;
+    }
+
+    if (vkAllocateMemory(g_device, &allocInfo, nullptr, &g_ddsQuadImageMemory) != VK_SUCCESS) {
+        std::cerr << "[DDS] ERROR: Failed to allocate image memory!" << std::endl;
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        return 0;
+    }
+
+    vkBindImageMemory(g_device, g_ddsQuadImage, g_ddsQuadImageMemory, 0);
+
+    // Create staging buffer to upload compressed data
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    
+    VkBufferCreateInfo bufferInfo = {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = ddsData.compressedData.size();
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(g_device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS) {
+        vkFreeMemory(g_device, g_ddsQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        return 0;
+    }
+
+    vkGetBufferMemoryRequirements(g_device, stagingBuffer, &memRequirements);
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, 
+                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    
+    if (allocInfo.memoryTypeIndex == UINT32_MAX || allocInfo.memoryTypeIndex == 0) {
+        std::cerr << "[DDS] ERROR: Failed to find suitable memory type for staging buffer!" << std::endl;
+        vkDestroyBuffer(g_device, stagingBuffer, nullptr);
+        vkFreeMemory(g_device, g_ddsQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        return 0;
+    }
+
+    if (vkAllocateMemory(g_device, &allocInfo, nullptr, &stagingBufferMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(g_device, stagingBuffer, nullptr);
+        vkFreeMemory(g_device, g_ddsQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        return 0;
+    }
+
+    vkBindBufferMemory(g_device, stagingBuffer, stagingBufferMemory, 0);
+
+    // Copy compressed data to staging buffer
+    void* data;
+    vkMapMemory(g_device, stagingBufferMemory, 0, ddsData.compressedData.size(), 0, &data);
+    memcpy(data, ddsData.compressedData.data(), ddsData.compressedData.size());
+    vkUnmapMemory(g_device, stagingBufferMemory);
+
+    // Transition image layout for transfer and upload data
+    VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = g_ddsQuadImage;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = ddsData.mipmapCount;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    // Copy buffer to image (for compressed formats, we copy raw blocks)
+    VkBufferImageCopy region = {};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {ddsData.width, ddsData.height, 1};
+
+    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, g_ddsQuadImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // Transition image layout to shader-readable
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    endSingleTimeCommands(commandBuffer);
+
+    // Cleanup staging buffer
+    vkDestroyBuffer(g_device, stagingBuffer, nullptr);
+    vkFreeMemory(g_device, stagingBufferMemory, nullptr);
+
+    // Create image view
+    VkImageViewCreateInfo viewInfo = {};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = g_ddsQuadImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = ddsData.format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = ddsData.mipmapCount;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(g_device, &viewInfo, nullptr, &g_ddsQuadImageView) != VK_SUCCESS) {
+        std::cerr << "[DDS] ERROR: Failed to create image view!" << std::endl;
+        vkFreeMemory(g_device, g_ddsQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        return 0;
+    }
+
+    // Create sampler
+    VkSamplerCreateInfo samplerInfo = {};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.mipLodBias = 0.0f;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = static_cast<float>(ddsData.mipmapCount);
+
+    if (vkCreateSampler(g_device, &samplerInfo, nullptr, &g_ddsQuadSampler) != VK_SUCCESS) {
+        std::cerr << "[DDS] ERROR: Failed to create sampler!" << std::endl;
+        vkDestroyImageView(g_device, g_ddsQuadImageView, nullptr);
+        vkFreeMemory(g_device, g_ddsQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        return 0;
+    }
+    
+    // Create descriptor set layout (for texture binding)
+    VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+    samplerLayoutBinding.binding = 0;
+    samplerLayoutBinding.descriptorCount = 1;
+    samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    samplerLayoutBinding.pImmutableSamplers = nullptr;
+    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &samplerLayoutBinding;
+
+    if (vkCreateDescriptorSetLayout(g_device, &layoutInfo, nullptr, &g_ddsQuadDescriptorSetLayout) != VK_SUCCESS) {
+        std::cerr << "[DDS] ERROR: Failed to create descriptor set layout!" << std::endl;
+        vkDestroySampler(g_device, g_ddsQuadSampler, nullptr);
+        vkDestroyImageView(g_device, g_ddsQuadImageView, nullptr);
+        vkFreeMemory(g_device, g_ddsQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        return 0;
+    }
+
+    // Create descriptor pool
+    VkDescriptorPoolSize poolSize = {};
+    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSize.descriptorCount = 1;
+
+    VkDescriptorPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 1;
+
+    if (vkCreateDescriptorPool(g_device, &poolInfo, nullptr, &g_ddsQuadDescriptorPool) != VK_SUCCESS) {
+        std::cerr << "[DDS] ERROR: Failed to create descriptor pool!" << std::endl;
+        vkDestroyDescriptorSetLayout(g_device, g_ddsQuadDescriptorSetLayout, nullptr);
+        vkDestroySampler(g_device, g_ddsQuadSampler, nullptr);
+        vkDestroyImageView(g_device, g_ddsQuadImageView, nullptr);
+        vkFreeMemory(g_device, g_ddsQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        return 0;
+    }
+
+    // Allocate descriptor set
+    VkDescriptorSetAllocateInfo allocInfo2 = {};
+    allocInfo2.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo2.descriptorPool = g_ddsQuadDescriptorPool;
+    allocInfo2.descriptorSetCount = 1;
+    allocInfo2.pSetLayouts = &g_ddsQuadDescriptorSetLayout;
+
+    if (vkAllocateDescriptorSets(g_device, &allocInfo2, &g_ddsQuadDescriptorSet) != VK_SUCCESS) {
+        std::cerr << "[DDS] ERROR: Failed to allocate descriptor set!" << std::endl;
+        vkDestroyDescriptorPool(g_device, g_ddsQuadDescriptorPool, nullptr);
+        vkDestroyDescriptorSetLayout(g_device, g_ddsQuadDescriptorSetLayout, nullptr);
+        vkDestroySampler(g_device, g_ddsQuadSampler, nullptr);
+        vkDestroyImageView(g_device, g_ddsQuadImageView, nullptr);
+        vkFreeMemory(g_device, g_ddsQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        return 0;
+    }
+
+    // Update descriptor set
+    VkDescriptorImageInfo imageInfo2 = {};
+    imageInfo2.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfo2.imageView = g_ddsQuadImageView;
+    imageInfo2.sampler = g_ddsQuadSampler;
+
+    VkWriteDescriptorSet descriptorWrite = {};
+    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrite.dstSet = g_ddsQuadDescriptorSet;
+    descriptorWrite.dstBinding = 0;
+    descriptorWrite.dstArrayElement = 0;
+    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrite.descriptorCount = 1;
+    descriptorWrite.pImageInfo = &imageInfo2;
+
+    vkUpdateDescriptorSets(g_device, 1, &descriptorWrite, 0, nullptr);
+
+    // Create quad vertex buffer
+    VkDeviceSize vertexBufferSize = sizeof(g_quadVertices);
+    createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 g_ddsQuadVertexBuffer, g_ddsQuadVertexBufferMemory);
+
+    vkMapMemory(g_device, g_ddsQuadVertexBufferMemory, 0, vertexBufferSize, 0, &data);
+    memcpy(data, g_quadVertices, (size_t)vertexBufferSize);
+    vkUnmapMemory(g_device, g_ddsQuadVertexBufferMemory);
+
+    // Create quad index buffer
+    VkDeviceSize indexBufferSize = sizeof(g_quadIndices);
+    createBuffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 g_ddsQuadIndexBuffer, g_ddsQuadIndexBufferMemory);
+
+    vkMapMemory(g_device, g_ddsQuadIndexBufferMemory, 0, indexBufferSize, 0, &data);
+    memcpy(data, g_quadIndices, (size_t)indexBufferSize);
+    vkUnmapMemory(g_device, g_ddsQuadIndexBufferMemory);
+
+    // Load quad shaders
+    std::vector<char> vertShaderCode, fragShaderCode;
+    std::vector<std::string> quadVertPaths = {
+        "shaders/quad.vert.spv",
+        "quad.vert.spv",
+        "examples/dds_quad_test/quad.vert.spv",
+        "../examples/dds_quad_test/quad.vert.spv"
+    };
+    std::vector<std::string> quadFragPaths = {
+        "shaders/quad.frag.spv",
+        "quad.frag.spv",
+        "examples/dds_quad_test/quad.frag.spv",
+        "../examples/dds_quad_test/quad.frag.spv"
+    };
+
+    bool foundVert = false, foundFrag = false;
+    for (const auto& path : quadVertPaths) {
+        try {
+            vertShaderCode = readFile(path);
+            foundVert = true;
+            std::cout << "[DDS] Loaded quad vertex shader: " << path << std::endl;
+            break;
+        } catch (...) {
+            // Try next path
+        }
+    }
+
+    for (const auto& path : quadFragPaths) {
+        try {
+            fragShaderCode = readFile(path);
+            foundFrag = true;
+            std::cout << "[DDS] Loaded quad fragment shader: " << path << std::endl;
+            break;
+        } catch (...) {
+            // Try next path
+        }
+    }
+
+    if (!foundVert || !foundFrag) {
+        std::cerr << "[DDS] ERROR: Could not find quad shaders (quad.vert.spv, quad.frag.spv)!" << std::endl;
+        std::cerr << "[DDS] Please compile quad.vert and quad.frag shaders first" << std::endl;
+        // Cleanup...
+        vkDestroyDescriptorPool(g_device, g_ddsQuadDescriptorPool, nullptr);
+        vkDestroyDescriptorSetLayout(g_device, g_ddsQuadDescriptorSetLayout, nullptr);
+        vkDestroySampler(g_device, g_ddsQuadSampler, nullptr);
+        vkDestroyImageView(g_device, g_ddsQuadImageView, nullptr);
+        vkFreeMemory(g_device, g_ddsQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        return 0;
+    }
+
+    // Create shader modules
+    VkShaderModuleCreateInfo vertCreateInfo = {};
+    vertCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vertCreateInfo.codeSize = vertShaderCode.size();
+    vertCreateInfo.pCode = reinterpret_cast<const uint32_t*>(vertShaderCode.data());
+
+    if (vkCreateShaderModule(g_device, &vertCreateInfo, nullptr, &g_ddsQuadVertShaderModule) != VK_SUCCESS) {
+        std::cerr << "[DDS] ERROR: Failed to create vertex shader module!" << std::endl;
+        return 0;
+    }
+
+    VkShaderModuleCreateInfo fragCreateInfo = {};
+    fragCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    fragCreateInfo.codeSize = fragShaderCode.size();
+    fragCreateInfo.pCode = reinterpret_cast<const uint32_t*>(fragShaderCode.data());
+
+    if (vkCreateShaderModule(g_device, &fragCreateInfo, nullptr, &g_ddsQuadFragShaderModule) != VK_SUCCESS) {
+        std::cerr << "[DDS] ERROR: Failed to create fragment shader module!" << std::endl;
+        vkDestroyShaderModule(g_device, g_ddsQuadVertShaderModule, nullptr);
+        return 0;
+    }
+
+    // Create pipeline layout
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &g_ddsQuadDescriptorSetLayout;
+
+    if (vkCreatePipelineLayout(g_device, &pipelineLayoutInfo, nullptr, &g_ddsQuadPipelineLayout) != VK_SUCCESS) {
+        std::cerr << "[DDS] ERROR: Failed to create pipeline layout!" << std::endl;
+        vkDestroyShaderModule(g_device, g_ddsQuadFragShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_ddsQuadVertShaderModule, nullptr);
+        return 0;
+    }
+
+    // Create graphics pipeline
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = g_ddsQuadVertShaderModule;
+    vertShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = g_ddsQuadFragShaderModule;
+    fragShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+    // Vertex input
+    VkVertexInputBindingDescription bindingDescription = {};
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(QuadVertex);
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attributeDescriptions[2] = {};
+    attributeDescriptions[0].binding = 0;
+    attributeDescriptions[0].location = 0;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[0].offset = offsetof(QuadVertex, pos);
+
+    attributeDescriptions[1].binding = 0;
+    attributeDescriptions[1].location = 1;
+    attributeDescriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[1].offset = offsetof(QuadVertex, uv);
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = 2;
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)g_swapchainExtent.width;
+    viewport.height = (float)g_swapchainExtent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor = {};
+    scissor.offset = {0, 0};
+    scissor.extent = g_swapchainExtent;
+
+    VkPipelineViewportStateCreateInfo viewportState = {};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer = {};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling = {};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending = {};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    VkGraphicsPipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = g_ddsQuadPipelineLayout;
+    pipelineInfo.renderPass = g_renderPass;
+    pipelineInfo.subpass = 0;
+
+    if (vkCreateGraphicsPipelines(g_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_ddsQuadPipeline) != VK_SUCCESS) {
+        std::cerr << "[DDS] ERROR: Failed to create graphics pipeline!" << std::endl;
+        vkDestroyPipelineLayout(g_device, g_ddsQuadPipelineLayout, nullptr);
+        vkDestroyShaderModule(g_device, g_ddsQuadFragShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_ddsQuadVertShaderModule, nullptr);
+        return 0;
+    }
+
+    std::cout << "[DDS] DDS quad renderer initialized successfully!" << std::endl;
+    g_ddsQuadInitialized = true;
+    return 1;
+}
+
+extern "C" void heidic_render_dds_quad(GLFWwindow* window) {
+    if (!g_ddsQuadInitialized || g_device == VK_NULL_HANDLE || g_swapchain == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // Wait for previous frame
+    vkWaitForFences(g_device, 1, &g_inFlightFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(g_device, 1, &g_inFlightFence);
+
+    // Acquire next image
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(g_device, g_swapchain, UINT64_MAX, g_imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+    // Reset command buffer
+    vkResetCommandBuffer(g_commandBuffers[imageIndex], 0);
+
+    // Begin command buffer
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    vkBeginCommandBuffer(g_commandBuffers[imageIndex], &beginInfo);
+
+    // Begin render pass
+    VkRenderPassBeginInfo renderPassInfo = {};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = g_renderPass;
+    renderPassInfo.framebuffer = g_framebuffers[imageIndex];
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = g_swapchainExtent;
+
+    VkClearValue clearValues[2] = {};
+    clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    clearValues[1].depthStencil = {1.0f, 0};
+    renderPassInfo.clearValueCount = 2;
+    renderPassInfo.pClearValues = clearValues;
+
+    vkCmdBeginRenderPass(g_commandBuffers[imageIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    // Bind pipeline
+    vkCmdBindPipeline(g_commandBuffers[imageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, g_ddsQuadPipeline);
+
+    // Bind descriptor set (contains texture)
+    vkCmdBindDescriptorSets(g_commandBuffers[imageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                            g_ddsQuadPipelineLayout, 0, 1, &g_ddsQuadDescriptorSet, 0, nullptr);
+
+    // Bind vertex and index buffers
+    VkBuffer vertexBuffers[] = {g_ddsQuadVertexBuffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(g_commandBuffers[imageIndex], 0, 1, vertexBuffers, offsets);
+    vkCmdBindIndexBuffer(g_commandBuffers[imageIndex], g_ddsQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT16);
+
+    // Draw quad (2 triangles = 6 indices)
+    vkCmdDrawIndexed(g_commandBuffers[imageIndex], 6, 1, 0, 0, 0);
+
+    vkCmdEndRenderPass(g_commandBuffers[imageIndex]);
+    vkEndCommandBuffer(g_commandBuffers[imageIndex]);
+
+    // Submit
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    VkSemaphore waitSemaphores[] = {g_imageAvailableSemaphore};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &g_commandBuffers[imageIndex];
+
+    VkSemaphore signalSemaphores[] = {g_renderFinishedSemaphore};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+
+    vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, g_inFlightFence);
+
+    // Present
+    VkPresentInfoKHR presentInfo = {};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+
+    VkSwapchainKHR swapChains[] = {g_swapchain};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &imageIndex;
+
+    vkQueuePresentKHR(g_graphicsQueue, &presentInfo);
+}
+
+extern "C" void heidic_cleanup_renderer_dds_quad() {
+    if (g_ddsQuadSampler != VK_NULL_HANDLE) {
+        vkDestroySampler(g_device, g_ddsQuadSampler, nullptr);
+        g_ddsQuadSampler = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadImageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(g_device, g_ddsQuadImageView, nullptr);
+        g_ddsQuadImageView = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadImage != VK_NULL_HANDLE) {
+        vkDestroyImage(g_device, g_ddsQuadImage, nullptr);
+        g_ddsQuadImage = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadImageMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_ddsQuadImageMemory, nullptr);
+        g_ddsQuadImageMemory = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_ddsQuadPipeline, nullptr);
+        g_ddsQuadPipeline = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadPipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(g_device, g_ddsQuadPipelineLayout, nullptr);
+        g_ddsQuadPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(g_device, g_ddsQuadDescriptorPool, nullptr);
+        g_ddsQuadDescriptorPool = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadDescriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(g_device, g_ddsQuadDescriptorSetLayout, nullptr);
+        g_ddsQuadDescriptorSetLayout = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadVertexBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_device, g_ddsQuadVertexBuffer, nullptr);
+        g_ddsQuadVertexBuffer = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadVertexBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_ddsQuadVertexBufferMemory, nullptr);
+        g_ddsQuadVertexBufferMemory = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadIndexBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_device, g_ddsQuadIndexBuffer, nullptr);
+        g_ddsQuadIndexBuffer = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadIndexBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_ddsQuadIndexBufferMemory, nullptr);
+        g_ddsQuadIndexBufferMemory = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadVertShaderModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(g_device, g_ddsQuadVertShaderModule, nullptr);
+        g_ddsQuadVertShaderModule = VK_NULL_HANDLE;
+    }
+    if (g_ddsQuadFragShaderModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(g_device, g_ddsQuadFragShaderModule, nullptr);
+        g_ddsQuadFragShaderModule = VK_NULL_HANDLE;
+    }
+    g_ddsQuadInitialized = false;
+}
+
+// ========== PNG QUAD RENDERER ==========
+// PNG Quad Renderer Global State (similar to DDS but for uncompressed RGBA8)
+static VkImage g_pngQuadImage = VK_NULL_HANDLE;
+static VkImageView g_pngQuadImageView = VK_NULL_HANDLE;
+static VkSampler g_pngQuadSampler = VK_NULL_HANDLE;
+static VkDeviceMemory g_pngQuadImageMemory = VK_NULL_HANDLE;
+static VkPipeline g_pngQuadPipeline = VK_NULL_HANDLE;
+static VkPipelineLayout g_pngQuadPipelineLayout = VK_NULL_HANDLE;
+static VkDescriptorSetLayout g_pngQuadDescriptorSetLayout = VK_NULL_HANDLE;
+static VkDescriptorPool g_pngQuadDescriptorPool = VK_NULL_HANDLE;
+static VkDescriptorSet g_pngQuadDescriptorSet = VK_NULL_HANDLE;
+static VkBuffer g_pngQuadVertexBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_pngQuadVertexBufferMemory = VK_NULL_HANDLE;
+static VkBuffer g_pngQuadIndexBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_pngQuadIndexBufferMemory = VK_NULL_HANDLE;
+static VkShaderModule g_pngQuadVertShaderModule = VK_NULL_HANDLE;
+static VkShaderModule g_pngQuadFragShaderModule = VK_NULL_HANDLE;
+static bool g_pngQuadInitialized = false;
+
+extern "C" int heidic_init_renderer_png_quad(GLFWwindow* window, const char* pngPath) {
+    if (window == nullptr || pngPath == nullptr) {
+        std::cerr << "[PNG] ERROR: Invalid parameters!" << std::endl;
+        return 0;
+    }
+    
+    // Initialize base renderer (creates device, swapchain, etc.)
+    if (heidic_init_renderer(window) == 0) {
+        return 0;
+    }
+    
+    // Destroy triangle pipeline since we'll use our own
+    if (g_pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_pipeline, nullptr);
+        g_pipeline = VK_NULL_HANDLE;
+    }
+    
+    std::cout << "[PNG] Loading texture: " << pngPath << std::endl;
+    
+    // Load PNG file
+    PNGData pngData;
+    try {
+        pngData = load_png(pngPath);
+    } catch (const std::exception& e) {
+        std::cerr << "[PNG] ERROR: " << e.what() << std::endl;
+        return 0;
+    }
+    
+    std::cout << "[PNG] Loaded: " << pngData.width << "x" << pngData.height 
+              << ", Format: " << pngData.format << std::endl;
+    
+    // Create Vulkan image (PNG is uncompressed RGBA8, no mipmaps)
+    VkImageCreateInfo imageInfo = {};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = pngData.width;
+    imageInfo.extent.height = pngData.height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;  // PNG has no mipmaps
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = pngData.format;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    
+    if (vkCreateImage(g_device, &imageInfo, nullptr, &g_pngQuadImage) != VK_SUCCESS) {
+        std::cerr << "[PNG] ERROR: Failed to create image!" << std::endl;
+        return 0;
+    }
+    
+    // Allocate memory for image
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements(g_device, g_pngQuadImage, &memRequirements);
+    
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    
+    if (allocInfo.memoryTypeIndex == UINT32_MAX || allocInfo.memoryTypeIndex == 0) {
+        std::cerr << "[PNG] ERROR: Failed to find suitable memory type!" << std::endl;
+        vkDestroyImage(g_device, g_pngQuadImage, nullptr);
+        return 0;
+    }
+    
+    if (vkAllocateMemory(g_device, &allocInfo, nullptr, &g_pngQuadImageMemory) != VK_SUCCESS) {
+        std::cerr << "[PNG] ERROR: Failed to allocate image memory!" << std::endl;
+        vkDestroyImage(g_device, g_pngQuadImage, nullptr);
+        return 0;
+    }
+    
+    vkBindImageMemory(g_device, g_pngQuadImage, g_pngQuadImageMemory, 0);
+    
+    // Create staging buffer to upload uncompressed RGBA8 data
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    
+    VkBufferCreateInfo bufferInfo = {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = pngData.pixelData.size();
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    
+    if (vkCreateBuffer(g_device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS) {
+        vkFreeMemory(g_device, g_pngQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_pngQuadImage, nullptr);
+        std::cerr << "[PNG] ERROR: Failed to create staging buffer!" << std::endl;
+        return 0;
+    }
+    
+    vkGetBufferMemoryRequirements(g_device, stagingBuffer, &memRequirements);
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, 
+                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    
+    if (vkAllocateMemory(g_device, &allocInfo, nullptr, &stagingBufferMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(g_device, stagingBuffer, nullptr);
+        vkFreeMemory(g_device, g_pngQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_pngQuadImage, nullptr);
+        std::cerr << "[PNG] ERROR: Failed to allocate staging buffer memory!" << std::endl;
+        return 0;
+    }
+    
+    vkBindBufferMemory(g_device, stagingBuffer, stagingBufferMemory, 0);
+    
+    // Copy pixel data to staging buffer
+    void* data;
+    vkMapMemory(g_device, stagingBufferMemory, 0, pngData.pixelData.size(), 0, &data);
+    memcpy(data, pngData.pixelData.data(), pngData.pixelData.size());
+    vkUnmapMemory(g_device, stagingBufferMemory);
+    
+    // Transition image layout for transfer and upload data
+    VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+    
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = g_pngQuadImage;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    
+    // Copy buffer to image (uncompressed RGBA8)
+    VkBufferImageCopy region = {};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {pngData.width, pngData.height, 1};
+    
+    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, g_pngQuadImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    
+    // Transition image layout to shader-readable
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    
+    endSingleTimeCommands(commandBuffer);
+    
+    // Cleanup staging buffer
+    vkDestroyBuffer(g_device, stagingBuffer, nullptr);
+    vkFreeMemory(g_device, stagingBufferMemory, nullptr);
+    
+    // Create image view
+    VkImageViewCreateInfo viewInfo = {};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = g_pngQuadImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = pngData.format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+    
+    if (vkCreateImageView(g_device, &viewInfo, nullptr, &g_pngQuadImageView) != VK_SUCCESS) {
+        std::cerr << "[PNG] ERROR: Failed to create image view!" << std::endl;
+        vkFreeMemory(g_device, g_pngQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_pngQuadImage, nullptr);
+        return 0;
+    }
+    
+    // Create sampler
+    VkSamplerCreateInfo samplerInfo = {};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.mipLodBias = 0.0f;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = 0.0f;  // No mipmaps for PNG
+    
+    if (vkCreateSampler(g_device, &samplerInfo, nullptr, &g_pngQuadSampler) != VK_SUCCESS) {
+        std::cerr << "[PNG] ERROR: Failed to create sampler!" << std::endl;
+        vkDestroyImageView(g_device, g_pngQuadImageView, nullptr);
+        vkFreeMemory(g_device, g_pngQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_pngQuadImage, nullptr);
+        return 0;
+    }
+    
+    // Create descriptor set layout (same as DDS)
+    VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+    samplerLayoutBinding.binding = 0;
+    samplerLayoutBinding.descriptorCount = 1;
+    samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    samplerLayoutBinding.pImmutableSamplers = nullptr;
+    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &samplerLayoutBinding;
+    
+    if (vkCreateDescriptorSetLayout(g_device, &layoutInfo, nullptr, &g_pngQuadDescriptorSetLayout) != VK_SUCCESS) {
+        std::cerr << "[PNG] ERROR: Failed to create descriptor set layout!" << std::endl;
+        vkDestroySampler(g_device, g_pngQuadSampler, nullptr);
+        vkDestroyImageView(g_device, g_pngQuadImageView, nullptr);
+        vkFreeMemory(g_device, g_pngQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_pngQuadImage, nullptr);
+        return 0;
+    }
+    
+    // Create descriptor pool
+    VkDescriptorPoolSize poolSize = {};
+    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSize.descriptorCount = 1;
+    
+    VkDescriptorPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 1;
+    
+    if (vkCreateDescriptorPool(g_device, &poolInfo, nullptr, &g_pngQuadDescriptorPool) != VK_SUCCESS) {
+        std::cerr << "[PNG] ERROR: Failed to create descriptor pool!" << std::endl;
+        vkDestroyDescriptorSetLayout(g_device, g_pngQuadDescriptorSetLayout, nullptr);
+        vkDestroySampler(g_device, g_pngQuadSampler, nullptr);
+        vkDestroyImageView(g_device, g_pngQuadImageView, nullptr);
+        vkFreeMemory(g_device, g_pngQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_pngQuadImage, nullptr);
+        return 0;
+    }
+    
+    // Allocate descriptor set
+    VkDescriptorSetAllocateInfo allocInfo2 = {};
+    allocInfo2.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo2.descriptorPool = g_pngQuadDescriptorPool;
+    allocInfo2.descriptorSetCount = 1;
+    allocInfo2.pSetLayouts = &g_pngQuadDescriptorSetLayout;
+    
+    if (vkAllocateDescriptorSets(g_device, &allocInfo2, &g_pngQuadDescriptorSet) != VK_SUCCESS) {
+        std::cerr << "[PNG] ERROR: Failed to allocate descriptor set!" << std::endl;
+        vkDestroyDescriptorPool(g_device, g_pngQuadDescriptorPool, nullptr);
+        vkDestroyDescriptorSetLayout(g_device, g_pngQuadDescriptorSetLayout, nullptr);
+        vkDestroySampler(g_device, g_pngQuadSampler, nullptr);
+        vkDestroyImageView(g_device, g_pngQuadImageView, nullptr);
+        vkFreeMemory(g_device, g_pngQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_pngQuadImage, nullptr);
+        return 0;
+    }
+    
+    // Update descriptor set
+    VkDescriptorImageInfo imageInfo2 = {};
+    imageInfo2.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfo2.imageView = g_pngQuadImageView;
+    imageInfo2.sampler = g_pngQuadSampler;
+    
+    VkWriteDescriptorSet descriptorWrite = {};
+    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrite.dstSet = g_pngQuadDescriptorSet;
+    descriptorWrite.dstBinding = 0;
+    descriptorWrite.dstArrayElement = 0;
+    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrite.descriptorCount = 1;
+    descriptorWrite.pImageInfo = &imageInfo2;
+    
+    vkUpdateDescriptorSets(g_device, 1, &descriptorWrite, 0, nullptr);
+    
+    // Create quad vertex buffer (reuse same quad vertices as DDS)
+    VkDeviceSize vertexBufferSize = sizeof(g_quadVertices);
+    createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 g_pngQuadVertexBuffer, g_pngQuadVertexBufferMemory);
+    
+    vkMapMemory(g_device, g_pngQuadVertexBufferMemory, 0, vertexBufferSize, 0, &data);
+    memcpy(data, g_quadVertices, (size_t)vertexBufferSize);
+    vkUnmapMemory(g_device, g_pngQuadVertexBufferMemory);
+    
+    // Create quad index buffer
+    VkDeviceSize indexBufferSize = sizeof(g_quadIndices);
+    createBuffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 g_pngQuadIndexBuffer, g_pngQuadIndexBufferMemory);
+    
+    vkMapMemory(g_device, g_pngQuadIndexBufferMemory, 0, indexBufferSize, 0, &data);
+    memcpy(data, g_quadIndices, (size_t)indexBufferSize);
+    vkUnmapMemory(g_device, g_pngQuadIndexBufferMemory);
+    
+    // Load quad shaders (same paths as DDS)
+    std::vector<char> vertShaderCode, fragShaderCode;
+    std::vector<std::string> quadVertPaths = {
+        "shaders/quad.vert.spv",
+        "quad.vert.spv",
+        "examples/dds_quad_test/quad.vert.spv",
+        "../examples/dds_quad_test/quad.vert.spv"
+    };
+    std::vector<std::string> quadFragPaths = {
+        "shaders/quad.frag.spv",
+        "quad.frag.spv",
+        "examples/dds_quad_test/quad.frag.spv",
+        "../examples/dds_quad_test/quad.frag.spv"
+    };
+    
+    bool foundVert = false, foundFrag = false;
+    for (const auto& path : quadVertPaths) {
+        try {
+            vertShaderCode = readFile(path);
+            foundVert = true;
+            std::cout << "[PNG] Loaded quad vertex shader: " << path << std::endl;
+            break;
+        } catch (...) {
+            // Try next path
+        }
+    }
+    
+    for (const auto& path : quadFragPaths) {
+        try {
+            fragShaderCode = readFile(path);
+            foundFrag = true;
+            std::cout << "[PNG] Loaded quad fragment shader: " << path << std::endl;
+            break;
+        } catch (...) {
+            // Try next path
+        }
+    }
+    
+    if (!foundVert || !foundFrag) {
+        std::cerr << "[PNG] ERROR: Failed to load quad shaders!" << std::endl;
+        vkDestroyBuffer(g_device, g_pngQuadIndexBuffer, nullptr);
+        vkFreeMemory(g_device, g_pngQuadIndexBufferMemory, nullptr);
+        vkDestroyBuffer(g_device, g_pngQuadVertexBuffer, nullptr);
+        vkFreeMemory(g_device, g_pngQuadVertexBufferMemory, nullptr);
+        vkDestroyDescriptorPool(g_device, g_pngQuadDescriptorPool, nullptr);
+        vkDestroyDescriptorSetLayout(g_device, g_pngQuadDescriptorSetLayout, nullptr);
+        vkDestroySampler(g_device, g_pngQuadSampler, nullptr);
+        vkDestroyImageView(g_device, g_pngQuadImageView, nullptr);
+        vkFreeMemory(g_device, g_pngQuadImageMemory, nullptr);
+        vkDestroyImage(g_device, g_pngQuadImage, nullptr);
+        return 0;
+    }
+    
+    // Create shader modules
+    VkShaderModuleCreateInfo vertCreateInfo = {};
+    vertCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vertCreateInfo.codeSize = vertShaderCode.size();
+    vertCreateInfo.pCode = reinterpret_cast<const uint32_t*>(vertShaderCode.data());
+    
+    if (vkCreateShaderModule(g_device, &vertCreateInfo, nullptr, &g_pngQuadVertShaderModule) != VK_SUCCESS) {
+        std::cerr << "[PNG] ERROR: Failed to create vertex shader module!" << std::endl;
+        return 0;
+    }
+    
+    VkShaderModuleCreateInfo fragCreateInfo = {};
+    fragCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    fragCreateInfo.codeSize = fragShaderCode.size();
+    fragCreateInfo.pCode = reinterpret_cast<const uint32_t*>(fragShaderCode.data());
+    
+    if (vkCreateShaderModule(g_device, &fragCreateInfo, nullptr, &g_pngQuadFragShaderModule) != VK_SUCCESS) {
+        std::cerr << "[PNG] ERROR: Failed to create fragment shader module!" << std::endl;
+        vkDestroyShaderModule(g_device, g_pngQuadVertShaderModule, nullptr);
+        return 0;
+    }
+    
+    // Create pipeline layout
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &g_pngQuadDescriptorSetLayout;
+    
+    if (vkCreatePipelineLayout(g_device, &pipelineLayoutInfo, nullptr, &g_pngQuadPipelineLayout) != VK_SUCCESS) {
+        std::cerr << "[PNG] ERROR: Failed to create pipeline layout!" << std::endl;
+        vkDestroyShaderModule(g_device, g_pngQuadFragShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_pngQuadVertShaderModule, nullptr);
+        return 0;
+    }
+    
+    // Create graphics pipeline (same as DDS)
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = g_pngQuadVertShaderModule;
+    vertShaderStageInfo.pName = "main";
+    
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = g_pngQuadFragShaderModule;
+    fragShaderStageInfo.pName = "main";
+    
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+    
+    // Vertex input
+    VkVertexInputBindingDescription bindingDescription = {};
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(QuadVertex);
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    
+    VkVertexInputAttributeDescription attributeDescriptions[2] = {};
+    attributeDescriptions[0].binding = 0;
+    attributeDescriptions[0].location = 0;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[0].offset = offsetof(QuadVertex, pos);
+    
+    attributeDescriptions[1].binding = 0;
+    attributeDescriptions[1].location = 1;
+    attributeDescriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[1].offset = offsetof(QuadVertex, uv);
+    
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = 2;
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
+    
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+    
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)g_swapchainExtent.width;
+    viewport.height = (float)g_swapchainExtent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    
+    VkRect2D scissor = {};
+    scissor.offset = {0, 0};
+    scissor.extent = g_swapchainExtent;
+    
+    VkPipelineViewportStateCreateInfo viewportState = {};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+    
+    VkPipelineRasterizationStateCreateInfo rasterizer = {};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+    
+    VkPipelineMultisampleStateCreateInfo multisampling = {};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    
+    VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+    
+    VkPipelineColorBlendStateCreateInfo colorBlending = {};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+    
+    VkGraphicsPipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = g_pngQuadPipelineLayout;
+    pipelineInfo.renderPass = g_renderPass;
+    pipelineInfo.subpass = 0;
+    
+    if (vkCreateGraphicsPipelines(g_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_pngQuadPipeline) != VK_SUCCESS) {
+        std::cerr << "[PNG] ERROR: Failed to create graphics pipeline!" << std::endl;
+        vkDestroyPipelineLayout(g_device, g_pngQuadPipelineLayout, nullptr);
+        vkDestroyShaderModule(g_device, g_pngQuadFragShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_pngQuadVertShaderModule, nullptr);
+        return 0;
+    }
+    
+    std::cout << "[PNG] PNG quad renderer initialized successfully!" << std::endl;
+    g_pngQuadInitialized = true;
+    return 1;
+}
+
+extern "C" void heidic_render_png_quad(GLFWwindow* window) {
+    if (!g_pngQuadInitialized || g_device == VK_NULL_HANDLE || g_swapchain == VK_NULL_HANDLE) {
+        return;
+    }
+    
+    // Wait for previous frame
+    vkWaitForFences(g_device, 1, &g_inFlightFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(g_device, 1, &g_inFlightFence);
+    
+    // Acquire next image
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(g_device, g_swapchain, UINT64_MAX, g_imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+    
+    // Reset command buffer
+    vkResetCommandBuffer(g_commandBuffers[imageIndex], 0);
+    
+    // Begin command buffer
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    vkBeginCommandBuffer(g_commandBuffers[imageIndex], &beginInfo);
+    
+    // Begin render pass
+    VkRenderPassBeginInfo renderPassInfo = {};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = g_renderPass;
+    renderPassInfo.framebuffer = g_framebuffers[imageIndex];
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = g_swapchainExtent;
+    
+    VkClearValue clearValues[2] = {};
+    clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    clearValues[1].depthStencil = {1.0f, 0};
+    renderPassInfo.clearValueCount = 2;
+    renderPassInfo.pClearValues = clearValues;
+    
+    vkCmdBeginRenderPass(g_commandBuffers[imageIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    
+    // Bind pipeline
+    vkCmdBindPipeline(g_commandBuffers[imageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, g_pngQuadPipeline);
+    
+    // Bind descriptor set (contains texture)
+    vkCmdBindDescriptorSets(g_commandBuffers[imageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                            g_pngQuadPipelineLayout, 0, 1, &g_pngQuadDescriptorSet, 0, nullptr);
+    
+    // Bind vertex and index buffers
+    VkBuffer vertexBuffers[] = {g_pngQuadVertexBuffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(g_commandBuffers[imageIndex], 0, 1, vertexBuffers, offsets);
+    vkCmdBindIndexBuffer(g_commandBuffers[imageIndex], g_pngQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT16);
+    
+    // Draw quad (2 triangles = 6 indices)
+    vkCmdDrawIndexed(g_commandBuffers[imageIndex], 6, 1, 0, 0, 0);
+    
+    vkCmdEndRenderPass(g_commandBuffers[imageIndex]);
+    vkEndCommandBuffer(g_commandBuffers[imageIndex]);
+    
+    // Submit
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    
+    VkSemaphore waitSemaphores[] = {g_imageAvailableSemaphore};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &g_commandBuffers[imageIndex];
+    
+    VkSemaphore signalSemaphores[] = {g_renderFinishedSemaphore};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+    
+    vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, g_inFlightFence);
+    
+    // Present
+    VkPresentInfoKHR presentInfo = {};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+    
+    VkSwapchainKHR swapChains[] = {g_swapchain};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &imageIndex;
+    
+    vkQueuePresentKHR(g_graphicsQueue, &presentInfo);
+}
+
+extern "C" void heidic_cleanup_renderer_png_quad() {
+    if (g_pngQuadSampler != VK_NULL_HANDLE) {
+        vkDestroySampler(g_device, g_pngQuadSampler, nullptr);
+        g_pngQuadSampler = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadImageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(g_device, g_pngQuadImageView, nullptr);
+        g_pngQuadImageView = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadImage != VK_NULL_HANDLE) {
+        vkDestroyImage(g_device, g_pngQuadImage, nullptr);
+        g_pngQuadImage = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadImageMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_pngQuadImageMemory, nullptr);
+        g_pngQuadImageMemory = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_pngQuadPipeline, nullptr);
+        g_pngQuadPipeline = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadPipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(g_device, g_pngQuadPipelineLayout, nullptr);
+        g_pngQuadPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(g_device, g_pngQuadDescriptorPool, nullptr);
+        g_pngQuadDescriptorPool = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadDescriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(g_device, g_pngQuadDescriptorSetLayout, nullptr);
+        g_pngQuadDescriptorSetLayout = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadVertexBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_device, g_pngQuadVertexBuffer, nullptr);
+        g_pngQuadVertexBuffer = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadVertexBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_pngQuadVertexBufferMemory, nullptr);
+        g_pngQuadVertexBufferMemory = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadIndexBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_device, g_pngQuadIndexBuffer, nullptr);
+        g_pngQuadIndexBuffer = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadIndexBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_pngQuadIndexBufferMemory, nullptr);
+        g_pngQuadIndexBufferMemory = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadVertShaderModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(g_device, g_pngQuadVertShaderModule, nullptr);
+        g_pngQuadVertShaderModule = VK_NULL_HANDLE;
+    }
+    if (g_pngQuadFragShaderModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(g_device, g_pngQuadFragShaderModule, nullptr);
+        g_pngQuadFragShaderModule = VK_NULL_HANDLE;
+    }
+    g_pngQuadInitialized = false;
+}
+
+// ========== TEXTURERESOURCE QUAD RENDERER (TEST) ==========
+// Test renderer that uses TextureResource class to load textures automatically
+static std::unique_ptr<TextureResource> g_textureResourceQuad = nullptr;
+static VkPipeline g_textureResourceQuadPipeline = VK_NULL_HANDLE;
+static VkPipelineLayout g_textureResourceQuadPipelineLayout = VK_NULL_HANDLE;
+static VkDescriptorSetLayout g_textureResourceQuadDescriptorSetLayout = VK_NULL_HANDLE;
+static VkDescriptorPool g_textureResourceQuadDescriptorPool = VK_NULL_HANDLE;
+static VkDescriptorSet g_textureResourceQuadDescriptorSet = VK_NULL_HANDLE;
+static VkBuffer g_textureResourceQuadVertexBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_textureResourceQuadVertexBufferMemory = VK_NULL_HANDLE;
+static VkBuffer g_textureResourceQuadIndexBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_textureResourceQuadIndexBufferMemory = VK_NULL_HANDLE;
+static VkShaderModule g_textureResourceQuadVertShaderModule = VK_NULL_HANDLE;
+static VkShaderModule g_textureResourceQuadFragShaderModule = VK_NULL_HANDLE;
+static bool g_textureResourceQuadInitialized = false;
+
+extern "C" int heidic_init_renderer_texture_quad(GLFWwindow* window, const char* texturePath) {
+    if (window == nullptr || texturePath == nullptr) {
+        std::cerr << "[TextureResource] ERROR: Invalid parameters!" << std::endl;
+        return 0;
+    }
+    
+    // Initialize base renderer (only if not already initialized)
+    if (g_device == VK_NULL_HANDLE) {
+        if (heidic_init_renderer(window) == 0) {
+            return 0;
+        }
+    } else {
+        // Already initialized, just destroy triangle pipeline if it exists
+        if (g_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g_device, g_pipeline, nullptr);
+            g_pipeline = VK_NULL_HANDLE;
+        }
+    }
+    
+    std::cout << "[TextureResource] Loading texture: " << texturePath << std::endl;
+    
+    // Debug: Print current working directory (helps diagnose path issues)
+    #ifdef _WIN32
+    char cwd[1024];
+    if (GetCurrentDirectoryA(1024, cwd)) {
+        std::cout << "[TextureResource] Current working directory: " << cwd << std::endl;
+    }
+    #else
+    char* cwd = getcwd(nullptr, 0);
+    if (cwd) {
+        std::cout << "[TextureResource] Current working directory: " << cwd << std::endl;
+        free(cwd);
+    }
+    #endif
+    
+    std::cout << "[TextureResource] Trying paths:" << std::endl;
+    
+    // Try multiple path variations to help debug path issues
+    std::vector<std::string> testPaths = {
+        texturePath,  // Original path
+        std::string("./") + texturePath,  // Explicit relative
+    };
+    
+    std::string actualPath = texturePath;
+    bool found = false;
+    for (const auto& testPath : testPaths) {
+        std::cout << "  - " << testPath;
+        std::ifstream testFile(testPath, std::ios::binary);
+        if (testFile.is_open()) {
+            testFile.close();
+            actualPath = testPath;
+            found = true;
+            std::cout << " [FOUND]" << std::endl;
+            break;
+        } else {
+            std::cout << " [NOT FOUND]" << std::endl;
+        }
+    }
+    
+    if (!found) {
+        std::cerr << "[TextureResource] ERROR: Cannot find texture file!" << std::endl;
+        std::cerr << "[TextureResource] Make sure the texture file exists relative to the working directory!" << std::endl;
+        std::cerr << "[TextureResource] Expected location: textures/test.dds or textures/test.png" << std::endl;
+        return 0;
+    }
+    
+    // Use TextureResource to load texture (auto-detects DDS vs PNG)
+    try {
+        g_textureResourceQuad = std::make_unique<TextureResource>(actualPath);
+        std::cout << "[TextureResource] Loaded: " << g_textureResourceQuad->getWidth() 
+                  << "x" << g_textureResourceQuad->getHeight() 
+                  << ", Format: " << g_textureResourceQuad->getFormat() << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[TextureResource] ERROR: " << e.what() << std::endl;
+        return 0;
+    }
+    
+    // Create descriptor set layout
+    VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+    samplerLayoutBinding.binding = 0;
+    samplerLayoutBinding.descriptorCount = 1;
+    samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    samplerLayoutBinding.pImmutableSamplers = nullptr;
+    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &samplerLayoutBinding;
+    
+    if (vkCreateDescriptorSetLayout(g_device, &layoutInfo, nullptr, &g_textureResourceQuadDescriptorSetLayout) != VK_SUCCESS) {
+        std::cerr << "[TextureResource] ERROR: Failed to create descriptor set layout!" << std::endl;
+        g_textureResourceQuad.reset();
+        return 0;
+    }
+    
+    // Create descriptor pool
+    VkDescriptorPoolSize poolSize = {};
+    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSize.descriptorCount = 1;
+    
+    VkDescriptorPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 1;
+    
+    if (vkCreateDescriptorPool(g_device, &poolInfo, nullptr, &g_textureResourceQuadDescriptorPool) != VK_SUCCESS) {
+        std::cerr << "[TextureResource] ERROR: Failed to create descriptor pool!" << std::endl;
+        vkDestroyDescriptorSetLayout(g_device, g_textureResourceQuadDescriptorSetLayout, nullptr);
+        g_textureResourceQuad.reset();
+        return 0;
+    }
+    
+    // Allocate descriptor set
+    VkDescriptorSetAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = g_textureResourceQuadDescriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &g_textureResourceQuadDescriptorSetLayout;
+    
+    if (vkAllocateDescriptorSets(g_device, &allocInfo, &g_textureResourceQuadDescriptorSet) != VK_SUCCESS) {
+        std::cerr << "[TextureResource] ERROR: Failed to allocate descriptor set!" << std::endl;
+        vkDestroyDescriptorPool(g_device, g_textureResourceQuadDescriptorPool, nullptr);
+        vkDestroyDescriptorSetLayout(g_device, g_textureResourceQuadDescriptorSetLayout, nullptr);
+        g_textureResourceQuad.reset();
+        return 0;
+    }
+    
+    // Update descriptor set using TextureResource
+    VkDescriptorImageInfo imageInfo = g_textureResourceQuad->getDescriptorImageInfo();
+    VkWriteDescriptorSet descriptorWrite = {};
+    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrite.dstSet = g_textureResourceQuadDescriptorSet;
+    descriptorWrite.dstBinding = 0;
+    descriptorWrite.dstArrayElement = 0;
+    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrite.descriptorCount = 1;
+    descriptorWrite.pImageInfo = &imageInfo;
+    
+    vkUpdateDescriptorSets(g_device, 1, &descriptorWrite, 0, nullptr);
+    
+    // Create quad vertex/index buffers (reuse same vertices as DDS/PNG renderers)
+    VkDeviceSize vertexBufferSize = sizeof(g_quadVertices);
+    createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 g_textureResourceQuadVertexBuffer, g_textureResourceQuadVertexBufferMemory);
+    
+    void* data;
+    vkMapMemory(g_device, g_textureResourceQuadVertexBufferMemory, 0, vertexBufferSize, 0, &data);
+    memcpy(data, g_quadVertices, (size_t)vertexBufferSize);
+    vkUnmapMemory(g_device, g_textureResourceQuadVertexBufferMemory);
+    
+    VkDeviceSize indexBufferSize = sizeof(g_quadIndices);
+    createBuffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 g_textureResourceQuadIndexBuffer, g_textureResourceQuadIndexBufferMemory);
+    
+    vkMapMemory(g_device, g_textureResourceQuadIndexBufferMemory, 0, indexBufferSize, 0, &data);
+    memcpy(data, g_quadIndices, (size_t)indexBufferSize);
+    vkUnmapMemory(g_device, g_textureResourceQuadIndexBufferMemory);
+    
+    // Load quad shaders
+    std::vector<char> vertShaderCode, fragShaderCode;
+    std::vector<std::string> quadVertPaths = {
+        "shaders/quad.vert.spv",
+        "quad.vert.spv",
+        "examples/dds_quad_test/quad.vert.spv",
+        "../examples/dds_quad_test/quad.vert.spv"
+    };
+    std::vector<std::string> quadFragPaths = {
+        "shaders/quad.frag.spv",
+        "quad.frag.spv",
+        "examples/dds_quad_test/quad.frag.spv",
+        "../examples/dds_quad_test/quad.frag.spv"
+    };
+    
+    bool foundVert = false, foundFrag = false;
+    for (const auto& path : quadVertPaths) {
+        try {
+            vertShaderCode = readFile(path);
+            foundVert = true;
+            std::cout << "[TextureResource] Loaded vertex shader: " << path << std::endl;
+            break;
+        } catch (...) {}
+    }
+    
+    for (const auto& path : quadFragPaths) {
+        try {
+            fragShaderCode = readFile(path);
+            foundFrag = true;
+            std::cout << "[TextureResource] Loaded fragment shader: " << path << std::endl;
+            break;
+        } catch (...) {}
+    }
+    
+    if (!foundVert || !foundFrag) {
+        std::cerr << "[TextureResource] ERROR: Failed to load quad shaders!" << std::endl;
+        vkDestroyBuffer(g_device, g_textureResourceQuadIndexBuffer, nullptr);
+        vkFreeMemory(g_device, g_textureResourceQuadIndexBufferMemory, nullptr);
+        vkDestroyBuffer(g_device, g_textureResourceQuadVertexBuffer, nullptr);
+        vkFreeMemory(g_device, g_textureResourceQuadVertexBufferMemory, nullptr);
+        vkDestroyDescriptorPool(g_device, g_textureResourceQuadDescriptorPool, nullptr);
+        vkDestroyDescriptorSetLayout(g_device, g_textureResourceQuadDescriptorSetLayout, nullptr);
+        g_textureResourceQuad.reset();
+        return 0;
+    }
+    
+    // Create shader modules
+    VkShaderModuleCreateInfo vertCreateInfo = {};
+    vertCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vertCreateInfo.codeSize = vertShaderCode.size();
+    vertCreateInfo.pCode = reinterpret_cast<const uint32_t*>(vertShaderCode.data());
+    
+    if (vkCreateShaderModule(g_device, &vertCreateInfo, nullptr, &g_textureResourceQuadVertShaderModule) != VK_SUCCESS) {
+        std::cerr << "[TextureResource] ERROR: Failed to create vertex shader module!" << std::endl;
+        g_textureResourceQuad.reset();
+        return 0;
+    }
+    
+    VkShaderModuleCreateInfo fragCreateInfo = {};
+    fragCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    fragCreateInfo.codeSize = fragShaderCode.size();
+    fragCreateInfo.pCode = reinterpret_cast<const uint32_t*>(fragShaderCode.data());
+    
+    if (vkCreateShaderModule(g_device, &fragCreateInfo, nullptr, &g_textureResourceQuadFragShaderModule) != VK_SUCCESS) {
+        std::cerr << "[TextureResource] ERROR: Failed to create fragment shader module!" << std::endl;
+        vkDestroyShaderModule(g_device, g_textureResourceQuadVertShaderModule, nullptr);
+        g_textureResourceQuad.reset();
+        return 0;
+    }
+    
+    // Create pipeline layout
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &g_textureResourceQuadDescriptorSetLayout;
+    
+    if (vkCreatePipelineLayout(g_device, &pipelineLayoutInfo, nullptr, &g_textureResourceQuadPipelineLayout) != VK_SUCCESS) {
+        std::cerr << "[TextureResource] ERROR: Failed to create pipeline layout!" << std::endl;
+        vkDestroyShaderModule(g_device, g_textureResourceQuadFragShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_textureResourceQuadVertShaderModule, nullptr);
+        g_textureResourceQuad.reset();
+        return 0;
+    }
+    
+    // Create graphics pipeline (same setup as DDS/PNG renderers)
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = g_textureResourceQuadVertShaderModule;
+    vertShaderStageInfo.pName = "main";
+    
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = g_textureResourceQuadFragShaderModule;
+    fragShaderStageInfo.pName = "main";
+    
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+    
+    VkVertexInputBindingDescription bindingDescription = {};
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(QuadVertex);
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    
+    VkVertexInputAttributeDescription attributeDescriptions[2] = {};
+    attributeDescriptions[0].binding = 0;
+    attributeDescriptions[0].location = 0;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[0].offset = offsetof(QuadVertex, pos);
+    
+    attributeDescriptions[1].binding = 0;
+    attributeDescriptions[1].location = 1;
+    attributeDescriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[1].offset = offsetof(QuadVertex, uv);
+    
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = 2;
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
+    
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+    
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)g_swapchainExtent.width;
+    viewport.height = (float)g_swapchainExtent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    
+    VkRect2D scissor = {};
+    scissor.offset = {0, 0};
+    scissor.extent = g_swapchainExtent;
+    
+    VkPipelineViewportStateCreateInfo viewportState = {};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+    
+    VkPipelineRasterizationStateCreateInfo rasterizer = {};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+    
+    VkPipelineMultisampleStateCreateInfo multisampling = {};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    
+    VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+    
+    VkPipelineColorBlendStateCreateInfo colorBlending = {};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+    
+    VkGraphicsPipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = g_textureResourceQuadPipelineLayout;
+    pipelineInfo.renderPass = g_renderPass;
+    pipelineInfo.subpass = 0;
+    
+    if (vkCreateGraphicsPipelines(g_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_textureResourceQuadPipeline) != VK_SUCCESS) {
+        std::cerr << "[TextureResource] ERROR: Failed to create graphics pipeline!" << std::endl;
+        vkDestroyPipelineLayout(g_device, g_textureResourceQuadPipelineLayout, nullptr);
+        vkDestroyShaderModule(g_device, g_textureResourceQuadFragShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_textureResourceQuadVertShaderModule, nullptr);
+        g_textureResourceQuad.reset();
+        return 0;
+    }
+    
+    std::cout << "[TextureResource] TextureResource quad renderer initialized successfully!" << std::endl;
+    g_textureResourceQuadInitialized = true;
+    return 1;
+}
+
+extern "C" void heidic_render_texture_quad(GLFWwindow* window) {
+    if (!g_textureResourceQuadInitialized || !g_textureResourceQuad || g_device == VK_NULL_HANDLE || g_swapchain == VK_NULL_HANDLE) {
+        return;
+    }
+    
+    vkWaitForFences(g_device, 1, &g_inFlightFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(g_device, 1, &g_inFlightFence);
+    
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(g_device, g_swapchain, UINT64_MAX, g_imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+    
+    vkResetCommandBuffer(g_commandBuffers[imageIndex], 0);
+    
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    vkBeginCommandBuffer(g_commandBuffers[imageIndex], &beginInfo);
+    
+    VkRenderPassBeginInfo renderPassInfo = {};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = g_renderPass;
+    renderPassInfo.framebuffer = g_framebuffers[imageIndex];
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = g_swapchainExtent;
+    
+    VkClearValue clearValues[2] = {};
+    clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    clearValues[1].depthStencil = {1.0f, 0};
+    renderPassInfo.clearValueCount = 2;
+    renderPassInfo.pClearValues = clearValues;
+    
+    vkCmdBeginRenderPass(g_commandBuffers[imageIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    
+    vkCmdBindPipeline(g_commandBuffers[imageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, g_textureResourceQuadPipeline);
+    
+    vkCmdBindDescriptorSets(g_commandBuffers[imageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                            g_textureResourceQuadPipelineLayout, 0, 1, &g_textureResourceQuadDescriptorSet, 0, nullptr);
+    
+    VkBuffer vertexBuffers[] = {g_textureResourceQuadVertexBuffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(g_commandBuffers[imageIndex], 0, 1, vertexBuffers, offsets);
+    vkCmdBindIndexBuffer(g_commandBuffers[imageIndex], g_textureResourceQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT16);
+    
+    vkCmdDrawIndexed(g_commandBuffers[imageIndex], 6, 1, 0, 0, 0);
+    
+    vkCmdEndRenderPass(g_commandBuffers[imageIndex]);
+    vkEndCommandBuffer(g_commandBuffers[imageIndex]);
+    
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    
+    VkSemaphore waitSemaphores[] = {g_imageAvailableSemaphore};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &g_commandBuffers[imageIndex];
+    
+    VkSemaphore signalSemaphores[] = {g_renderFinishedSemaphore};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+    
+    vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, g_inFlightFence);
+    
+    VkPresentInfoKHR presentInfo = {};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+    
+    VkSwapchainKHR swapChains[] = {g_swapchain};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &imageIndex;
+    
+    vkQueuePresentKHR(g_graphicsQueue, &presentInfo);
+}
+
+extern "C" void heidic_cleanup_renderer_texture_quad() {
+    if (g_textureResourceQuadPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_textureResourceQuadPipeline, nullptr);
+        g_textureResourceQuadPipeline = VK_NULL_HANDLE;
+    }
+    if (g_textureResourceQuadPipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(g_device, g_textureResourceQuadPipelineLayout, nullptr);
+        g_textureResourceQuadPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (g_textureResourceQuadDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(g_device, g_textureResourceQuadDescriptorPool, nullptr);
+        g_textureResourceQuadDescriptorPool = VK_NULL_HANDLE;
+    }
+    if (g_textureResourceQuadDescriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(g_device, g_textureResourceQuadDescriptorSetLayout, nullptr);
+        g_textureResourceQuadDescriptorSetLayout = VK_NULL_HANDLE;
+    }
+    if (g_textureResourceQuadVertexBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_device, g_textureResourceQuadVertexBuffer, nullptr);
+        g_textureResourceQuadVertexBuffer = VK_NULL_HANDLE;
+    }
+    if (g_textureResourceQuadVertexBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_textureResourceQuadVertexBufferMemory, nullptr);
+        g_textureResourceQuadVertexBufferMemory = VK_NULL_HANDLE;
+    }
+    if (g_textureResourceQuadIndexBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_device, g_textureResourceQuadIndexBuffer, nullptr);
+        g_textureResourceQuadIndexBuffer = VK_NULL_HANDLE;
+    }
+    if (g_textureResourceQuadIndexBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_textureResourceQuadIndexBufferMemory, nullptr);
+        g_textureResourceQuadIndexBufferMemory = VK_NULL_HANDLE;
+    }
+    if (g_textureResourceQuadVertShaderModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(g_device, g_textureResourceQuadVertShaderModule, nullptr);
+        g_textureResourceQuadVertShaderModule = VK_NULL_HANDLE;
+    }
+    if (g_textureResourceQuadFragShaderModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(g_device, g_textureResourceQuadFragShaderModule, nullptr);
+        g_textureResourceQuadFragShaderModule = VK_NULL_HANDLE;
+    }
+    g_textureResourceQuad.reset();
+    g_textureResourceQuadInitialized = false;
+}
+
+// ============================================================================
+// OBJ MESH RENDERING FUNCTIONS (using MeshResource)
+// ============================================================================
+
+// OBJ mesh renderer state
+static std::unique_ptr<MeshResource> g_objMeshResource = nullptr;
+static std::unique_ptr<TextureResource> g_objMeshTexture = nullptr; // Optional texture for OBJ
+static VkPipeline g_objMeshPipeline = VK_NULL_HANDLE;
+static VkPipelineLayout g_objMeshPipelineLayout = VK_NULL_HANDLE;
+static VkDescriptorSetLayout g_objMeshDescriptorSetLayout = VK_NULL_HANDLE;
+static VkDescriptorPool g_objMeshDescriptorPool = VK_NULL_HANDLE;
+static VkDescriptorSet g_objMeshDescriptorSet = VK_NULL_HANDLE;
+static VkBuffer g_objMeshUniformBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_objMeshUniformBufferMemory = VK_NULL_HANDLE;
+static VkShaderModule g_objMeshVertShaderModule = VK_NULL_HANDLE;
+static VkShaderModule g_objMeshFragShaderModule = VK_NULL_HANDLE;
+static VkImage g_objMeshDummyTexture = VK_NULL_HANDLE;
+static VkImageView g_objMeshDummyTextureView = VK_NULL_HANDLE;
+static VkSampler g_objMeshDummySampler = VK_NULL_HANDLE;
+static VkDeviceMemory g_objMeshDummyTextureMemory = VK_NULL_HANDLE;
+static bool g_objMeshInitialized = false;
+static float g_objMeshRotationAngle = 0.0f;
+static std::chrono::high_resolution_clock::time_point g_objMeshLastTime = std::chrono::high_resolution_clock::now();
+
+// Initialize OBJ mesh renderer
+extern "C" int heidic_init_renderer_obj_mesh(GLFWwindow* window, const char* objPath, const char* texturePath) {
+    if (g_device == VK_NULL_HANDLE) {
+        // Initialize Vulkan if not already done
+        if (heidic_init_renderer(window) == 0) {
+            return 0;
+        }
+    } else {
+        // Vulkan already initialized, just destroy default triangle pipeline
+        if (g_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g_device, g_pipeline, nullptr);
+            g_pipeline = VK_NULL_HANDLE;
+        }
+    }
+    
+    // Load OBJ mesh using MeshResource
+    try {
+        std::cout << "[EDEN] Loading OBJ mesh: " << objPath << std::endl;
+        g_objMeshResource = std::make_unique<MeshResource>(objPath);
+        std::cout << "[EDEN] OBJ mesh loaded successfully!" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[EDEN] ERROR: Failed to load OBJ mesh: " << e.what() << std::endl;
+        return 0;
+    }
+    
+    // Load shaders
+    std::vector<char> vertShaderCode, fragShaderCode;
+    try {
+        vertShaderCode = readFile("mesh.vert.spv");
+        fragShaderCode = readFile("mesh.frag.spv");
+        std::cout << "[EDEN] Loaded mesh shaders successfully" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[EDEN] ERROR: Could not find mesh shader files (mesh.vert.spv, mesh.frag.spv)!" << std::endl;
+        std::cerr << "[EDEN] Error: " << e.what() << std::endl;
+        return 0;
+    }
+    
+    // Create shader modules
+    VkShaderModuleCreateInfo vertCreateInfo = {};
+    vertCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vertCreateInfo.codeSize = vertShaderCode.size();
+    vertCreateInfo.pCode = reinterpret_cast<const uint32_t*>(vertShaderCode.data());
+    
+    if (vkCreateShaderModule(g_device, &vertCreateInfo, nullptr, &g_objMeshVertShaderModule) != VK_SUCCESS) {
+        std::cerr << "[EDEN] ERROR: Failed to create vertex shader module!" << std::endl;
+        return 0;
+    }
+    
+    VkShaderModuleCreateInfo fragCreateInfo = {};
+    fragCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    fragCreateInfo.codeSize = fragShaderCode.size();
+    fragCreateInfo.pCode = reinterpret_cast<const uint32_t*>(fragShaderCode.data());
+    
+    if (vkCreateShaderModule(g_device, &fragCreateInfo, nullptr, &g_objMeshFragShaderModule) != VK_SUCCESS) {
+        std::cerr << "[EDEN] ERROR: Failed to create fragment shader module!" << std::endl;
+        vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+        return 0;
+    }
+    
+    // Create descriptor set layout (UBO + texture sampler)
+    VkDescriptorSetLayoutBinding uboLayoutBinding = {};
+    uboLayoutBinding.binding = 0;
+    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uboLayoutBinding.descriptorCount = 1;
+    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    
+    VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+    samplerLayoutBinding.binding = 1;
+    samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    samplerLayoutBinding.descriptorCount = 1;
+    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    VkDescriptorSetLayoutBinding bindings[] = {uboLayoutBinding, samplerLayoutBinding};
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
+    
+    if (vkCreateDescriptorSetLayout(g_device, &layoutInfo, nullptr, &g_objMeshDescriptorSetLayout) != VK_SUCCESS) {
+        std::cerr << "[EDEN] ERROR: Failed to create descriptor set layout!" << std::endl;
+        vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
+        return 0;
+    }
+    
+    // Create pipeline layout
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &g_objMeshDescriptorSetLayout;
+    
+    if (vkCreatePipelineLayout(g_device, &pipelineLayoutInfo, nullptr, &g_objMeshPipelineLayout) != VK_SUCCESS) {
+        std::cerr << "[EDEN] ERROR: Failed to create pipeline layout!" << std::endl;
+        vkDestroyDescriptorSetLayout(g_device, g_objMeshDescriptorSetLayout, nullptr);
+        vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
+        return 0;
+    }
+    
+    // Create uniform buffer
+    VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+    createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 g_objMeshUniformBuffer, g_objMeshUniformBufferMemory);
+    
+    // Load texture if provided, otherwise create dummy white texture
+    if (texturePath != nullptr && strlen(texturePath) > 0) {
+        try {
+            std::cout << "[EDEN] Loading texture for OBJ mesh: " << texturePath << std::endl;
+            g_objMeshTexture = std::make_unique<TextureResource>(texturePath);
+            std::cout << "[EDEN] Texture loaded successfully!" << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[EDEN] WARNING: Failed to load texture: " << e.what() << std::endl;
+            std::cerr << "[EDEN] Falling back to dummy white texture" << std::endl;
+            // Continue with dummy texture creation below
+        }
+    }
+    
+    // Create dummy texture if no texture was loaded
+    if (!g_objMeshTexture) {
+        uint32_t dummyData = 0xFFFFFFFF; // White RGBA
+        createImage(1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    g_objMeshDummyTexture, g_objMeshDummyTextureMemory);
+        
+        // Transition image layout and upload data
+        VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = g_objMeshDummyTexture;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+        
+        VkBufferImageCopy region = {};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = {1, 1, 1};
+        
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        createBuffer(4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     stagingBuffer, stagingBufferMemory);
+        
+        void* data;
+        vkMapMemory(g_device, stagingBufferMemory, 0, 4, 0, &data);
+        memcpy(data, &dummyData, 4);
+        vkUnmapMemory(g_device, stagingBufferMemory);
+        
+        vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, g_objMeshDummyTexture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+        
+        endSingleTimeCommands(commandBuffer);
+        
+        vkDestroyBuffer(g_device, stagingBuffer, nullptr);
+        vkFreeMemory(g_device, stagingBufferMemory, nullptr);
+        
+        // Create image view for dummy texture
+        VkImageViewCreateInfo viewInfo = {};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = g_objMeshDummyTexture;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        
+        if (vkCreateImageView(g_device, &viewInfo, nullptr, &g_objMeshDummyTextureView) != VK_SUCCESS) {
+            std::cerr << "[EDEN] ERROR: Failed to create dummy texture image view!" << std::endl;
+            vkDestroyImage(g_device, g_objMeshDummyTexture, nullptr);
+            vkFreeMemory(g_device, g_objMeshDummyTextureMemory, nullptr);
+            vkDestroyBuffer(g_device, g_objMeshUniformBuffer, nullptr);
+            vkFreeMemory(g_device, g_objMeshUniformBufferMemory, nullptr);
+            vkDestroyPipelineLayout(g_device, g_objMeshPipelineLayout, nullptr);
+            vkDestroyDescriptorSetLayout(g_device, g_objMeshDescriptorSetLayout, nullptr);
+            vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+            vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
+            return 0;
+        }
+        
+        // Create sampler for dummy texture
+        VkSamplerCreateInfo samplerInfo = {};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
+        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        samplerInfo.unnormalizedCoordinates = VK_FALSE;
+        samplerInfo.compareEnable = VK_FALSE;
+        samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerInfo.mipLodBias = 0.0f;
+        samplerInfo.minLod = 0.0f;
+        samplerInfo.maxLod = 0.0f;
+        
+        if (vkCreateSampler(g_device, &samplerInfo, nullptr, &g_objMeshDummySampler) != VK_SUCCESS) {
+            std::cerr << "[EDEN] ERROR: Failed to create sampler!" << std::endl;
+            vkDestroyImageView(g_device, g_objMeshDummyTextureView, nullptr);
+            vkDestroyImage(g_device, g_objMeshDummyTexture, nullptr);
+            vkFreeMemory(g_device, g_objMeshDummyTextureMemory, nullptr);
+            vkDestroyBuffer(g_device, g_objMeshUniformBuffer, nullptr);
+            vkFreeMemory(g_device, g_objMeshUniformBufferMemory, nullptr);
+            vkDestroyPipelineLayout(g_device, g_objMeshPipelineLayout, nullptr);
+            vkDestroyDescriptorSetLayout(g_device, g_objMeshDescriptorSetLayout, nullptr);
+            vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+            vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
+            return 0;
+        }
+    }
+    
+    // Create descriptor pool
+    VkDescriptorPoolSize poolSizes[2] = {};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[0].descriptorCount = 1;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = 1;
+    
+    VkDescriptorPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.maxSets = 1;
+    
+    if (vkCreateDescriptorPool(g_device, &poolInfo, nullptr, &g_objMeshDescriptorPool) != VK_SUCCESS) {
+        std::cerr << "[EDEN] ERROR: Failed to create descriptor pool!" << std::endl;
+        vkDestroySampler(g_device, g_objMeshDummySampler, nullptr);
+        vkDestroyImageView(g_device, g_objMeshDummyTextureView, nullptr);
+        vkDestroyImage(g_device, g_objMeshDummyTexture, nullptr);
+        vkFreeMemory(g_device, g_objMeshDummyTextureMemory, nullptr);
+        vkDestroyBuffer(g_device, g_objMeshUniformBuffer, nullptr);
+        vkFreeMemory(g_device, g_objMeshUniformBufferMemory, nullptr);
+        vkDestroyPipelineLayout(g_device, g_objMeshPipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(g_device, g_objMeshDescriptorSetLayout, nullptr);
+        vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
+        return 0;
+    }
+    
+    // Allocate descriptor set
+    VkDescriptorSetAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = g_objMeshDescriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &g_objMeshDescriptorSetLayout;
+    
+    if (vkAllocateDescriptorSets(g_device, &allocInfo, &g_objMeshDescriptorSet) != VK_SUCCESS) {
+        std::cerr << "[EDEN] ERROR: Failed to allocate descriptor set!" << std::endl;
+        vkDestroyDescriptorPool(g_device, g_objMeshDescriptorPool, nullptr);
+        vkDestroySampler(g_device, g_objMeshDummySampler, nullptr);
+        vkDestroyImageView(g_device, g_objMeshDummyTextureView, nullptr);
+        vkDestroyImage(g_device, g_objMeshDummyTexture, nullptr);
+        vkFreeMemory(g_device, g_objMeshDummyTextureMemory, nullptr);
+        vkDestroyBuffer(g_device, g_objMeshUniformBuffer, nullptr);
+        vkFreeMemory(g_device, g_objMeshUniformBufferMemory, nullptr);
+        vkDestroyPipelineLayout(g_device, g_objMeshPipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(g_device, g_objMeshDescriptorSetLayout, nullptr);
+        vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
+        return 0;
+    }
+    
+    // Update descriptor set
+    VkDescriptorBufferInfo bufferInfo = {};
+    bufferInfo.buffer = g_objMeshUniformBuffer;
+    bufferInfo.offset = 0;
+    bufferInfo.range = sizeof(UniformBufferObject);
+    
+    // Use TextureResource if available, otherwise use dummy texture
+    VkDescriptorImageInfo imageInfo = {};
+    if (g_objMeshTexture) {
+        imageInfo = g_objMeshTexture->getDescriptorImageInfo();
+    } else {
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = g_objMeshDummyTextureView;
+        imageInfo.sampler = g_objMeshDummySampler;
+    }
+    
+    VkWriteDescriptorSet descriptorWrites[2] = {};
+    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[0].dstSet = g_objMeshDescriptorSet;
+    descriptorWrites[0].dstBinding = 0;
+    descriptorWrites[0].dstArrayElement = 0;
+    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    descriptorWrites[0].descriptorCount = 1;
+    descriptorWrites[0].pBufferInfo = &bufferInfo;
+    
+    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[1].dstSet = g_objMeshDescriptorSet;
+    descriptorWrites[1].dstBinding = 1;
+    descriptorWrites[1].dstArrayElement = 0;
+    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrites[1].descriptorCount = 1;
+    descriptorWrites[1].pImageInfo = &imageInfo;
+    
+    vkUpdateDescriptorSets(g_device, 2, descriptorWrites, 0, nullptr);
+    
+    // Create graphics pipeline
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = g_objMeshVertShaderModule;
+    vertShaderStageInfo.pName = "main";
+    
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = g_objMeshFragShaderModule;
+    fragShaderStageInfo.pName = "main";
+    
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+    
+    // Vertex input (MeshVertex: pos[3], normal[3], uv[2])
+    VkVertexInputBindingDescription bindingDescription = {};
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(MeshVertex);
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    
+    VkVertexInputAttributeDescription attributeDescriptions[3] = {};
+    attributeDescriptions[0].binding = 0;
+    attributeDescriptions[0].location = 0;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[0].offset = offsetof(MeshVertex, pos);
+    
+    attributeDescriptions[1].binding = 0;
+    attributeDescriptions[1].location = 1;
+    attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[1].offset = offsetof(MeshVertex, normal);
+    
+    attributeDescriptions[2].binding = 0;
+    attributeDescriptions[2].location = 2;
+    attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[2].offset = offsetof(MeshVertex, uv);
+    
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = 3;
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
+    
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+    
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)g_swapchainExtent.width;
+    viewport.height = (float)g_swapchainExtent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    
+    VkRect2D scissor = {};
+    scissor.offset = {0, 0};
+    scissor.extent = g_swapchainExtent;
+    
+    VkPipelineViewportStateCreateInfo viewportState = {};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+    
+    VkPipelineRasterizationStateCreateInfo rasterizer = {};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+    
+    VkPipelineMultisampleStateCreateInfo multisampling = {};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    
+    VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+    
+    VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+    
+    VkPipelineColorBlendStateCreateInfo colorBlending = {};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+    
+    VkGraphicsPipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = g_objMeshPipelineLayout;
+    pipelineInfo.renderPass = g_renderPass;
+    pipelineInfo.subpass = 0;
+    pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+    
+    if (vkCreateGraphicsPipelines(g_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_objMeshPipeline) != VK_SUCCESS) {
+        std::cerr << "[EDEN] ERROR: Failed to create graphics pipeline!" << std::endl;
+        vkDestroyDescriptorPool(g_device, g_objMeshDescriptorPool, nullptr);
+        vkDestroySampler(g_device, g_objMeshDummySampler, nullptr);
+        vkDestroyImageView(g_device, g_objMeshDummyTextureView, nullptr);
+        vkDestroyImage(g_device, g_objMeshDummyTexture, nullptr);
+        vkFreeMemory(g_device, g_objMeshDummyTextureMemory, nullptr);
+        vkDestroyBuffer(g_device, g_objMeshUniformBuffer, nullptr);
+        vkFreeMemory(g_device, g_objMeshUniformBufferMemory, nullptr);
+        vkDestroyPipelineLayout(g_device, g_objMeshPipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(g_device, g_objMeshDescriptorSetLayout, nullptr);
+        vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
+        return 0;
+    }
+    
+    g_objMeshInitialized = true;
+    std::cout << "[EDEN] OBJ mesh renderer initialized successfully!" << std::endl;
+    return 1;
+}
+
+// Render OBJ mesh
+extern "C" void heidic_render_obj_mesh(GLFWwindow* window) {
+    if (g_device == VK_NULL_HANDLE || g_swapchain == VK_NULL_HANDLE || g_objMeshPipeline == VK_NULL_HANDLE || !g_objMeshResource) {
+        return;
+    }
+    
+    // Update rotation angle
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(currentTime - g_objMeshLastTime);
+    float deltaTime = duration.count() / 1000000.0f;
+    g_objMeshLastTime = currentTime;
+    
+    g_objMeshRotationAngle += 1.0f * deltaTime;
+    if (g_objMeshRotationAngle > 2.0f * 3.14159f) {
+        g_objMeshRotationAngle -= 2.0f * 3.14159f;
+    }
+    
+    // Wait for previous frame
+    vkWaitForFences(g_device, 1, &g_inFlightFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(g_device, 1, &g_inFlightFence);
+    
+    // Acquire next image
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(g_device, g_swapchain, UINT64_MAX, g_imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+    
+    // Reset command buffer
+    vkResetCommandBuffer(g_commandBuffers[imageIndex], 0);
+    
+    // Begin command buffer
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    vkBeginCommandBuffer(g_commandBuffers[imageIndex], &beginInfo);
+    
+    // Begin render pass
+    VkRenderPassBeginInfo renderPassInfo = {};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = g_renderPass;
+    renderPassInfo.framebuffer = g_framebuffers[imageIndex];
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = g_swapchainExtent;
+    
+    std::array<VkClearValue, 2> clearValues = {};
+    clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};
+    clearValues[1].depthStencil = {1.0f, 0};
+    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+    renderPassInfo.pClearValues = clearValues.data();
+    
+    vkCmdBeginRenderPass(g_commandBuffers[imageIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    
+    // Bind pipeline
+    vkCmdBindPipeline(g_commandBuffers[imageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, g_objMeshPipeline);
+    
+    // Update uniform buffer
+    UniformBufferObject ubo = {};
+    
+    // Model matrix - rotate the mesh
+    Vec3 axis = {0.0f, 1.0f, 0.0f};
+    ubo.model = mat4_rotate(axis, g_objMeshRotationAngle);
+    
+    // View matrix - look at mesh from above and to the side
+    Vec3 eye = {3.0f, 3.0f, 3.0f};
+    Vec3 center = {0.0f, 0.0f, 0.0f};
+    Vec3 up = {0.0f, 1.0f, 0.0f};
+    ubo.view = mat4_lookat(eye, center, up);
+    
+    // Projection matrix
+    float fov = 45.0f * 3.14159f / 180.0f;
+    float aspect = (float)g_swapchainExtent.width / (float)g_swapchainExtent.height;
+    float nearPlane = 0.1f;
+    float farPlane = 100.0f;
+    ubo.proj = mat4_perspective(fov, aspect, nearPlane, farPlane);
+    
+    // Vulkan clip space has inverted Y and half Z
+    ubo.proj[1][1] *= -1.0f;
+    
+    // Update uniform buffer
+    void* data;
+    vkMapMemory(g_device, g_objMeshUniformBufferMemory, 0, sizeof(ubo), 0, &data);
+    memcpy(data, &ubo, sizeof(ubo));
+    vkUnmapMemory(g_device, g_objMeshUniformBufferMemory);
+    
+    // Bind descriptor set
+    vkCmdBindDescriptorSets(g_commandBuffers[imageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, g_objMeshPipelineLayout, 0, 1, &g_objMeshDescriptorSet, 0, nullptr);
+    
+    // Bind vertex buffer (from MeshResource)
+    VkBuffer vertexBuffer = g_objMeshResource->getVertexBuffer();
+    VkBuffer indexBuffer = g_objMeshResource->getIndexBuffer();
+    uint32_t indexCount = g_objMeshResource->getIndexCount();
+    
+    VkBuffer vertexBuffers[] = {vertexBuffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(g_commandBuffers[imageIndex], 0, 1, vertexBuffers, offsets);
+    
+    // Bind index buffer
+    vkCmdBindIndexBuffer(g_commandBuffers[imageIndex], indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    
+    // Draw mesh using indexed drawing
+    vkCmdDrawIndexed(g_commandBuffers[imageIndex], indexCount, 1, 0, 0, 0);
+    
+    vkCmdEndRenderPass(g_commandBuffers[imageIndex]);
+    vkEndCommandBuffer(g_commandBuffers[imageIndex]);
+    
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    
+    VkSemaphore waitSemaphores[] = {g_imageAvailableSemaphore};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &g_commandBuffers[imageIndex];
+    
+    VkSemaphore signalSemaphores[] = {g_renderFinishedSemaphore};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+    
+    vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, g_inFlightFence);
+    
+    VkPresentInfoKHR presentInfo = {};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+    
+    VkSwapchainKHR swapChains[] = {g_swapchain};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &imageIndex;
+    
+    vkQueuePresentKHR(g_graphicsQueue, &presentInfo);
+}
+
+// Cleanup OBJ mesh renderer
+extern "C" void heidic_cleanup_renderer_obj_mesh() {
+    if (g_objMeshPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_objMeshPipeline, nullptr);
+        g_objMeshPipeline = VK_NULL_HANDLE;
+    }
+    if (g_objMeshPipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(g_device, g_objMeshPipelineLayout, nullptr);
+        g_objMeshPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (g_objMeshDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(g_device, g_objMeshDescriptorPool, nullptr);
+        g_objMeshDescriptorPool = VK_NULL_HANDLE;
+    }
+    if (g_objMeshDescriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(g_device, g_objMeshDescriptorSetLayout, nullptr);
+        g_objMeshDescriptorSetLayout = VK_NULL_HANDLE;
+    }
+    if (g_objMeshUniformBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_device, g_objMeshUniformBuffer, nullptr);
+        g_objMeshUniformBuffer = VK_NULL_HANDLE;
+    }
+    if (g_objMeshUniformBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_objMeshUniformBufferMemory, nullptr);
+        g_objMeshUniformBufferMemory = VK_NULL_HANDLE;
+    }
+    // Cleanup texture (TextureResource handles its own cleanup via RAII)
+    if (g_objMeshTexture) {
+        g_objMeshTexture.reset();
+    }
+    // Cleanup dummy texture resources (only created if TextureResource wasn't used)
+    if (g_objMeshDummySampler != VK_NULL_HANDLE) {
+        vkDestroySampler(g_device, g_objMeshDummySampler, nullptr);
+        g_objMeshDummySampler = VK_NULL_HANDLE;
+    }
+    if (g_objMeshDummyTextureView != VK_NULL_HANDLE) {
+        vkDestroyImageView(g_device, g_objMeshDummyTextureView, nullptr);
+        g_objMeshDummyTextureView = VK_NULL_HANDLE;
+    }
+    if (g_objMeshDummyTexture != VK_NULL_HANDLE) {
+        vkDestroyImage(g_device, g_objMeshDummyTexture, nullptr);
+        g_objMeshDummyTexture = VK_NULL_HANDLE;
+    }
+    if (g_objMeshDummyTextureMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_objMeshDummyTextureMemory, nullptr);
+        g_objMeshDummyTextureMemory = VK_NULL_HANDLE;
+    }
+    if (g_objMeshVertShaderModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+        g_objMeshVertShaderModule = VK_NULL_HANDLE;
+    }
+    if (g_objMeshFragShaderModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
+        g_objMeshFragShaderModule = VK_NULL_HANDLE;
+    }
+    g_objMeshResource.reset();
+    g_objMeshInitialized = false;
 }
 

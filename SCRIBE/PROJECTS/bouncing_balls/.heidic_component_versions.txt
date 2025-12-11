@@ -1,0 +1,2 @@
+Position:1:x:float;y:float;z:float;size:float;bloat:double;
+Velocity:1:x:float;y:float;z:float;

@@ -1,0 +1,71 @@
+// HEIDIC Project: DDS Texture Test
+// Loads and displays a DDS texture on a fullscreen quad
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer_dds_quad(window: GLFWwindow, ddsPath: string): i32;
+extern fn heidic_render_dds_quad(window: GLFWwindow): void;
+extern fn heidic_cleanup_renderer_dds_quad(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+fn main(): void {
+    print("=== DDS Texture Test ===\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+    
+    print("Creating window (800x600)...\n");
+    let window: GLFWwindow = glfwCreateWindow(800, 600, "DDS Texture Test", 0, 0);
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Initializing DDS quad renderer...\n");
+
+    // Initialize renderer and load DDS texture
+    // Path is relative to project directory (where .hd file is)
+    // Note: String literals automatically convert to const char* for extern functions
+    let renderer_init: i32 = heidic_init_renderer_dds_quad(window, "textures/test.dds");
+    if renderer_init == 0 {
+        print("Failed to initialize DDS renderer!\n");
+        print("Make sure:\n");
+        print("  1. textures/test.dds exists\n");
+        print("  2. shaders/quad.vert.spv and shaders/quad.frag.spv exist\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("Renderer initialized!\n");
+    print("Texture loaded successfully!\n");
+    print("Starting render loop...\n");
+    print("Press ESC or close the window to exit.\n");
+
+    while glfwWindowShouldClose(window) == 0 {
+        glfwPollEvents();
+
+        if glfwGetKey(window, 256) == 1 { // ESC key
+            glfwSetWindowShouldClose(window, 1);
+        }
+
+        // Render the DDS texture on fullscreen quad
+        heidic_render_dds_quad(window);
+        heidic_sleep_ms(16); // ~60 FPS cap
+    }
+
+    print("Cleaning up...\n");
+    heidic_cleanup_renderer_dds_quad();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Program exited successfully.\n");
+    print("Done!\n");
+}

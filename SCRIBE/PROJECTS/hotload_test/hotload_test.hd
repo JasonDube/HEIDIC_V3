@@ -1,0 +1,86 @@
+// HEIDIC Project: hotload_test
+// Hot-reloadable project with Vulkan rendering
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer(window: GLFWwindow): i32;
+extern fn heidic_render_frame(window: GLFWwindow): void;
+extern fn heidic_set_rotation_speed(speed: f32): void;
+extern fn heidic_cleanup_renderer(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+// Hot-reloadable system for rotation
+// Edit rotation_speed and use Hotload button to see changes instantly!
+@hot
+system(rotation) {
+    fn get_rotation_speed(): f32 {
+        // Try changing this value while the game is running!
+        let rotation_speed: f32 = 0.3;
+        return rotation_speed;
+    }
+}
+
+fn main(): void {
+    print("=== hotload_test ===\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+    
+    print("Creating window (800x600)...\n");
+    let window: GLFWwindow = glfwCreateWindow(800, 600, "hotload_test - Hot Reload Test", 0, 0);
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Initializing Vulkan renderer...\n");
+
+    let renderer_init: i32 = heidic_init_renderer(window);
+    if renderer_init == 0 {
+        print("Failed to initialize renderer!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("Renderer initialized!\n");
+    print("Starting render loop...\n");
+    print("\n");
+    print("=== HOT-RELOAD INSTRUCTIONS ===\n");
+    print("1. Edit rotation_speed in the @hot system\n");
+    print("2. Save the file\n");
+    print("3. Click the red Hotload button (▶)\n");
+    print("4. Watch the triangle spin faster/slower!\n");
+    print("5. Press ESC or close window to exit\n");
+    print("\n");
+
+    while glfwWindowShouldClose(window) == 0 {
+        glfwPollEvents();
+
+        if glfwGetKey(window, 256) == 1 { // ESC key
+            glfwSetWindowShouldClose(window, 1);
+        }
+
+        // Get rotation speed from hot-reloadable system
+        let rotation_speed: f32 = get_rotation_speed();
+        heidic_set_rotation_speed(rotation_speed); // pass speed to renderer for live updates
+        
+        heidic_render_frame(window);
+        heidic_sleep_ms(16); // ~60 FPS cap
+    }
+
+    print("Cleaning up...\n");
+    heidic_cleanup_renderer();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Program exited successfully.\n");
+    print("Done!\n");
+}
