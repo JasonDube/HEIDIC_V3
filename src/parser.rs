@@ -54,7 +54,7 @@ impl Parser {
                 Ok(Item::Shader(self.parse_shader(false)?))
             }
             Token::Hot => {
-                // @hot system name { ... } or @hot shader vertex "path" { }
+                // @hot system name { ... } or @hot shader vertex "path" { } or @hot resource Name: Type = "path";
                 self.advance();
                 if self.check(&Token::System) {
                     self.advance();
@@ -92,8 +92,11 @@ impl Parser {
                 } else if self.check(&Token::ComponentSOA) {
                     self.advance();
                     Ok(Item::Component(self.parse_component(true, true)?))
+                } else if self.check(&Token::Resource) {
+                    self.advance();
+                    Ok(Item::Resource(self.parse_resource(true)?))
                 } else {
-                    bail!("Expected 'system', 'shader', or 'component' after '@hot'");
+                    bail!("Expected 'system', 'shader', 'component', or 'resource' after '@hot'");
                 }
             }
             Token::Extern => {
@@ -103,6 +106,10 @@ impl Parser {
             Token::Fn => {
                 self.advance();
                 Ok(Item::Function(self.parse_function()?))
+            }
+            Token::Resource => {
+                self.advance();
+                Ok(Item::Resource(self.parse_resource(false)?))
             }
             _ => bail!("Unexpected token at item level: {:?}", self.peek()),
         }
@@ -214,6 +221,36 @@ impl Parser {
         }
         
         Ok(crate::ast::ShaderDef { stage, path, is_hot })
+    }
+    
+    fn parse_resource(&mut self, is_hot: bool) -> Result<crate::ast::ResourceDef> {
+        // Parse: resource Name: Type = "path";
+        let name = self.expect_ident()?;
+        self.expect(&Token::Colon)?;
+        
+        // Parse resource type (Texture, Mesh, etc.)
+        let resource_type = self.expect_ident()?;
+        
+        self.expect(&Token::Eq)?;
+        
+        // Parse file path (string literal)
+        let path_token = self.peek().clone();
+        let path = match path_token {
+            Token::StringLit(p) => {
+                self.advance();
+                p
+            }
+            _ => bail!("Expected string literal for resource path, got: {:?}", path_token),
+        };
+        
+        self.expect(&Token::Semicolon)?;
+        
+        Ok(crate::ast::ResourceDef {
+            name,
+            resource_type,
+            path,
+            is_hot,
+        })
     }
     
     fn parse_extern_function(&mut self) -> Result<ExternFunctionDef> {

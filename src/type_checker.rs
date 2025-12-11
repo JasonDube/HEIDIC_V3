@@ -85,6 +85,10 @@ impl TypeChecker {
                     // Validate that shader stage matches file extension
                     self.validate_shader_stage(shader)?;
                 }
+                Item::Resource(_) => {
+                    // Resources don't need type checking - they're just declarations
+                    // The resource type (Texture, Mesh) is validated at codegen time
+                }
             }
         }
         
@@ -98,6 +102,9 @@ impl TypeChecker {
                     for func in &s.functions {
                         self.check_function(func)?;
                     }
+                }
+                Item::Resource(_) => {
+                    // Resources don't need type checking in second pass
                 }
                 _ => {}
             }

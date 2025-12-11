@@ -1,0 +1,88 @@
+// Resource Hot-Reload Test Project
+// Tests CONTINUUM resource hot-reload - resources automatically reload when files change!
+
+// Declare hot-reloadable resources using @hot keyword (consistent with @hot system, @hot shader, @hot component)
+@hot resource MyMesh: Mesh = "models/eve_1.obj";
+@hot resource MyTexture: Texture = "textures/eve_tex.png";
+// Uncomment the line below and comment the line above to test code-based resource switching
+//@hot resource MyTexture: Texture = "textures/eve2_tex.png";
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer_obj_mesh(window: GLFWwindow, objPath: string, texturePath: string): i32;
+extern fn heidic_render_obj_mesh(window: GLFWwindow): void;
+extern fn heidic_cleanup_renderer_obj_mesh(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+fn main(): void {
+    print("=== Resource Hot-Reload Test ===\n");
+    print("Testing CONTINUUM resource hot-reload system\n");
+    print("Resources declared with @hot keyword for hot-reload!\n");
+    print("\n");
+    print("TEST 1: Code-based resource switching\n");
+    print("  - Uncomment the second @hot resource texture and comment the first\n");
+    print("  - Use hotload button (red run) to recompile\n");
+    print("  - Texture should change after recompilation\n");
+    print("\n");
+    print("TEST 2: File-based hot-reload (true CONTINUUM)\n");
+    print("  - While game is running, replace textures/eve_tex.png with a different image\n");
+    print("  - @hot resource should automatically reload and update visually!\n");
+    print("  - Watch console for: [Resource Hot-Reload] MyTexture reloaded successfully!\n");
+    print("\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+    
+    print("Creating window (800x600)...\n");
+    let window: GLFWwindow = glfwCreateWindow(800, 600, "Resource Hot-Reload Test", 0, 0);
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Resources are declared and will be loaded on first access!\n");
+    print("Initializing renderer...\n");
+    
+    // Use the path-based renderer - the renderer will check for file changes each frame
+    // The HEIDIC resource system will also reload the resource when the file changes
+    let renderer_init: i32 = heidic_init_renderer_obj_mesh(window, "models/eve_1.obj", "textures/eve_tex.png");
+    if renderer_init == 0 {
+        print("Failed to initialize renderer!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("Renderer initialized!\n");
+    print("Starting render loop...\n");
+    print("Resource hot-reload checks happen automatically each frame!\n");
+    print("Press ESC or close the window to exit.\n");
+    print("\n");
+    print("=== Ready for hot-reload testing ===\n");
+    print("Try replacing textures/eve_tex.png while the game is running!\n");
+
+    while glfwWindowShouldClose(window) == 0 {
+        glfwPollEvents();
+
+        if glfwGetKey(window, 256) == 1 { // ESC key
+            glfwSetWindowShouldClose(window, 1);
+        }
+
+        heidic_render_obj_mesh(window);
+        heidic_sleep_ms(16); // ~60 FPS cap
+    }
+
+    print("Cleaning up...\n");
+    heidic_cleanup_renderer_obj_mesh();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Done!\n");
+}

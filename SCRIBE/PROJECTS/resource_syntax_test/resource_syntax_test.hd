@@ -1,0 +1,18 @@
+// Resource Syntax Test - Phase 2 Complete!
+// Tests the new HEIDIC resource keyword syntax
+
+// Declare resources using zero-boilerplate syntax
+resource MyTexture: Texture = "textures/test.dds";
+resource MyMesh: Mesh = "models/cube.obj";
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer(): i32;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+fn main(): void {
+    print("=== Resource Syntax Test ===\n");
+    print("Testing HEIDIC resource keyword syntax\n");
+    print("Resources declared with zero boilerplate!\n");
+    print("Phase 2 Complete - Resource syntax is ready!\n");
+}
+

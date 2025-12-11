@@ -189,7 +189,7 @@ static uint32_t calculateMipmapSize(uint32_t width, uint32_t height, VkFormat fo
 }
 
 // Load DDS file and extract compressed data
-DDSData load_dds(const std::string& path) {
+inline DDSData load_dds(const std::string& path) {
     DDSData result = {};
     result.format = VK_FORMAT_UNDEFINED;
     result.mipmapCount = 1;

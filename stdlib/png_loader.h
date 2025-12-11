@@ -12,13 +12,12 @@
 #include <cstring>
 
 // Use stb_image for PNG loading (single-header library)
-// Only define implementation once (prevent multiple includes from redefining)
-#ifndef STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
+// Always include the header for declarations and constants
+// STB_IMAGE_IMPLEMENTATION should be defined in exactly ONE .cpp file before including this header
+// The header itself is safe to include multiple times - only the implementation is defined once
 #define STBI_ONLY_PNG
 #define STBI_NO_LINEAR  // We don't need HDR support for PNG
 #include "../stdlib/stb_image.h"
-#endif
 
 // PNG data structure (similar to DDS but uncompressed)
 struct PNGData {

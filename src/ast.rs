@@ -53,6 +53,7 @@ pub enum Item {
     Shader(ShaderDef),
     Function(FunctionDef),
     ExternFunction(ExternFunctionDef),
+    Resource(ResourceDef),
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +114,14 @@ pub struct ExternFunctionDef {
     pub params: Vec<Param>,
     pub return_type: Type,
     pub library: Option<String>, // Library name to link against
+}
+
+#[derive(Debug, Clone)]
+pub struct ResourceDef {
+    pub name: String,
+    pub resource_type: String, // "Texture", "Mesh", etc.
+    pub path: String,          // File path (string literal)
+    pub is_hot: bool,          // true if marked with @hot
 }
 
 #[derive(Debug, Clone)]

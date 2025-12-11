@@ -50,6 +50,8 @@ pub enum Token {
     Query,
     #[token("extern")]
     Extern,
+    #[token("resource")]
+    Resource,
     
     // Attributes
     #[token("@hot")]

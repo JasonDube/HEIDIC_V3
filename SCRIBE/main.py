@@ -342,15 +342,27 @@ class Editor:
         return os.path.exists(cpp_path)
     
     def has_hot_systems(self):
-        """Check if the current HEIDIC file has @hot systems or @hot shaders."""
+        """Check if the current HEIDIC file has @hot systems, @hot shaders, @hot components, or @hot resources."""
         # Check the original HD file regardless of current view mode
         if not self.original_hd_path or not self.original_hd_path.endswith(".hd"):
             return False
         try:
             with open(self.original_hd_path, "r", encoding="utf-8") as f:
                 content = f.read()
-                # Check for @hot annotation (systems or shaders)
+                # Check for @hot annotation (systems, shaders, components, or resources)
                 return "@hot" in content
+        except:
+            return False
+    
+    def has_resources(self):
+        """Check if the current HEIDIC file has @hot resource declarations."""
+        if not self.original_hd_path or not self.original_hd_path.endswith(".hd"):
+            return False
+        try:
+            with open(self.original_hd_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                # Only check for @hot resource (not regular resources)
+                return "@hot" in content and "resource" in content
         except:
             return False
     
@@ -1652,15 +1664,18 @@ class Editor:
         return shader_compile_time
     
     def hotload_dll(self):
-        """Rebuild hot-reloadable DLL(s) for @hot systems and compile hot shaders."""
+        """Rebuild hot-reloadable DLL(s) for @hot systems, compile hot shaders, or recompile resources."""
         if not self.has_hot_systems():
-            self.status = "No @hot systems or shaders found"
-            self.log_lines.append("ERROR: No @hot systems or shaders found in current file")
+            self.status = "No @hot systems, shaders, or resources found"
+            self.log_lines.append("ERROR: No @hot systems, shaders, or resources found in current file")
             return
         
         self.save()
         hd_path = os.path.abspath(self.original_hd_path)
         project_dir = os.path.dirname(hd_path)
+        
+        # Check if we have resources (need to recompile HEIDIC code)
+        has_resources = self.has_resources()
         
         # Step 1: Compile hot shaders (GLSL -> SPIR-V)
         hot_shaders = self.find_hot_shaders()
@@ -1724,9 +1739,9 @@ class Editor:
                 self.log_lines.append("WARNING: glslc not found. Shader compilation skipped.")
                 self.log_lines.append("WARNING: Install Vulkan SDK or ensure glslc is in PATH.")
         
-        # Step 2: Recompile HEIDIC source to regenerate DLL source (only if we have hot systems)
+        # Step 2: Recompile HEIDIC source (if we have hot systems OR resources)
         dll_files = self.find_hot_dll_files()
-        if dll_files:
+        if dll_files or has_resources:
             self.status = "Hotloading: Recompiling HEIDIC..."
             pygame.display.flip()
             result = self._run_step("Hotload-Compile", [p.format(file=hd_path, cpp="") for p in CMD_COMPILE])
@@ -1735,10 +1750,42 @@ class Editor:
                 self.status = "Hotload failed: Compilation error"
                 return
         
-        # Step 3: Find and rebuild DLL files (only if we have hot systems)
+        # Step 3: Handle resources (recompile and rebuild executable)
+        if has_resources and not dll_files:
+            # For resources, we need to rebuild the executable to load new resource declarations
+            # NOTE: The game must be stopped first, otherwise the .exe file will be locked
+            self.status = "Hotloading: Rebuilding executable for resources..."
+            pygame.display.flip()
+            
+            # Use the same build logic as regular build
+            cpp_file = hd_path.replace(".hd", ".cpp")
+            if os.path.exists(cpp_file):
+                # Rebuild using _do_build (it handles everything: shaders, compilation, linking)
+                # Check if build succeeded by checking if exe was created/updated
+                exe_name = os.path.splitext(os.path.basename(hd_path))[0] + ".exe"
+                exe_path = os.path.join(os.path.dirname(hd_path), exe_name)
+                exe_existed_before = os.path.exists(exe_path)
+                
+                self._do_build(hd_path, cpp_file)
+                
+                # Check if build succeeded
+                if os.path.exists(exe_path):
+                    self.status = "Hotload: Resources recompiled successfully"
+                    self.log_lines.append("Hotload: Resources recompiled - restart the game to see changes")
+                    self.log_lines.append("NOTE: Stop the game first if it's running, then restart to see new resources")
+                else:
+                    self.status = "Hotload failed: Could not rebuild executable"
+                    self.log_lines.append("ERROR: Build failed - make sure the game is stopped (exe file may be locked)")
+                return  # Resources handled, we're done
+            else:
+                self.log_lines.append("WARNING: C++ file not found, cannot rebuild for resources")
+                return
+        
+        # Step 4: Find and rebuild DLL files (only if we have hot systems)
         if not dll_files and not hot_shaders:
+            # No hot systems, no hot shaders, and no resources (or resources already handled above)
             self.status = "Hotload: No hot-reloadable items found"
-            self.log_lines.append("WARNING: No @hot systems or shaders to hotload")
+            self.log_lines.append("WARNING: No @hot systems, shaders, or resources to hotload")
             return
         
         if not dll_files:

@@ -7,6 +7,7 @@ pub struct CodeGenerator {
     hot_systems: Vec<SystemDef>,  // Store hot-reloadable systems
     hot_shaders: Vec<ShaderDef>,  // Store hot-reloadable shaders
     hot_components: Vec<ComponentDef>,  // Store hot-reloadable components
+    has_resources: bool,  // Track if program has resource declarations
 }
 
 impl CodeGenerator {
@@ -16,6 +17,7 @@ impl CodeGenerator {
             hot_systems: Vec::new(),
             hot_shaders: Vec::new(),
             hot_components: Vec::new(),
+            has_resources: false,
         }
     }
     
@@ -81,8 +83,47 @@ impl CodeGenerator {
             }
         }
         
+        // Generate resources (need to include resource.h header)
+        // Check if we have any resources (for includes) and @hot resources (for hot-reload)
+        let mut has_any_resources = false;
+        self.has_resources = false;
+        for item in &program.items {
+            if let Item::Resource(res) = item {
+                has_any_resources = true;
+                if res.is_hot {
+                    self.has_resources = true;
+                }
+            }
+        }
+        if has_any_resources {
+            output.push_str("#include \"stdlib/resource.h\"\n");
+            output.push_str("#include \"stdlib/texture_resource.h\"\n");
+            output.push_str("#include \"stdlib/mesh_resource.h\"\n");
+            output.push_str("\n");
+        }
+        
+        // Generate resource declarations
+        for item in &program.items {
+            if let Item::Resource(res) = item {
+                output.push_str(&self.generate_resource(res));
+            }
+        }
+        
+        // Generate resource accessor functions (so resources can be accessed in HEIDIC)
+        if self.has_resources {
+            output.push_str("\n// Resource accessor functions (for HEIDIC access)\n");
+            for item in &program.items {
+                if let Item::Resource(res) = item {
+                    output.push_str(&self.generate_resource_accessor(res));
+                }
+            }
+            output.push_str("\n");
+        }
+        
         // Generate extern function declarations (C linkage)
+        // Note: Resource accessor functions are already implemented above, so we don't need to declare them here
         let mut extern_libraries = std::collections::HashSet::new();
+        
         for item in &program.items {
             if let Item::ExternFunction(ext) = item {
                 output.push_str("extern \"C\" {\n");
@@ -212,6 +253,13 @@ impl CodeGenerator {
             output.push_str("// Shader hot-reload function forward declarations\n");
             output.push_str("void check_and_reload_hot_shaders();\n");
             output.push_str("extern \"C\" void heidic_reload_shader(const char* shader_path);\n");
+            output.push_str("\n");
+        }
+        
+        // Generate forward declarations for resource hot-reload functions if we have resources
+        if self.has_resources {
+            output.push_str("// Resource hot-reload function forward declarations\n");
+            output.push_str("void check_and_reload_resources();\n");
             output.push_str("\n");
         }
         
@@ -398,6 +446,23 @@ impl CodeGenerator {
                 output.push_str(&format!("    if (stat(\"{}\", &{}) == 0) {{\n", spv_path, stat_var_name));
                 output.push_str(&format!("        g_shader_mtimes[\"{}\"] = {}.st_mtime;\n", spv_path, stat_var_name));
                 output.push_str(&format!("    }}\n"));
+            }
+            output.push_str("}\n");
+            output.push_str("\n");
+        }
+        
+        // Generate resource hot-reload runtime integration
+        if self.has_resources {
+            output.push_str("\n// Resource Hot-Reload Runtime Integration (CONTINUUM)\n");
+            output.push_str("void check_and_reload_resources() {\n");
+            for item in &program.items {
+                if let Item::Resource(res) = item {
+                    let global_name = format!("g_resource_{}", res.name.to_lowercase());
+                    output.push_str(&format!("    // Check {} resource file modification time\n", res.name));
+                    output.push_str(&format!("    if ({}.reload()) {{\n", global_name));
+                    output.push_str(&format!("        std::cout << \"[Resource Hot-Reload] {} reloaded successfully!\" << std::endl;\n", res.name));
+                    output.push_str(&format!("    }}\n"));
+                }
             }
             output.push_str("}\n");
             output.push_str("\n");
@@ -771,6 +836,40 @@ impl CodeGenerator {
         output
     }
     
+    fn generate_resource(&self, res: &ResourceDef) -> String {
+        // Map resource type to C++ class name
+        let cpp_resource_type = match res.resource_type.as_str() {
+            "Texture" => "TextureResource",
+            "Mesh" => "MeshResource",
+            _ => {
+                // Unknown resource type - use as-is (might be custom)
+                &res.resource_type
+            }
+        };
+        
+        // Generate: Resource<TextureResource> g_resource_MyTexture("path/to/file.dds");
+        // Use lowercase name for the global variable (HEIDIC convention)
+        let global_name = format!("g_resource_{}", res.name.to_lowercase());
+        format!("Resource<{}> {}(\"{}\");\n", cpp_resource_type, global_name, res.path)
+    }
+    
+    fn generate_resource_accessor(&self, res: &ResourceDef) -> String {
+        // Generate accessor function so resource can be accessed in HEIDIC
+        // Example: extern "C" Resource<MeshResource>* get_resource_mymesh() { return &g_resource_mymesh; }
+        let global_name = format!("g_resource_{}", res.name.to_lowercase());
+        let cpp_resource_type = match res.resource_type.as_str() {
+            "Texture" => "TextureResource",
+            "Mesh" => "MeshResource",
+            _ => &res.resource_type
+        };
+        
+        // Generate extern C function for HEIDIC access
+        format!(
+            "extern \"C\" Resource<{}>* get_resource_{}() {{ return &{}; }}\n",
+            cpp_resource_type, res.name.to_lowercase(), global_name
+        )
+    }
+    
     fn is_component_soa(&self, component_name: &str) -> bool {
         self.components.get(component_name)
             .map(|c| c.is_soa)
@@ -1102,6 +1201,10 @@ impl CodeGenerator {
                 if !self.hot_components.is_empty() {
                     // Add component hot-reload check at the start of each while loop iteration
                     output.push_str(&format!("{}        check_and_migrate_hot_components();\n", self.indent(indent + 1)));
+                }
+                if self.has_resources {
+                    // Add resource hot-reload check at the start of each while loop iteration
+                    output.push_str(&format!("{}        check_and_reload_resources();\n", self.indent(indent + 1)));
                 }
                 for stmt in body {
                     output.push_str(&self.generate_statement(stmt, indent + 1));

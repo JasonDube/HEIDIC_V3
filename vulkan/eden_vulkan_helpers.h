@@ -75,6 +75,9 @@ void heidic_cleanup_renderer_texture_quad();
 // Initialize renderer and load OBJ mesh using MeshResource
 // texturePath can be nullptr for no texture, or path to DDS/PNG texture file
 int heidic_init_renderer_obj_mesh(GLFWwindow* window, const char* objPath, const char* texturePath);
+// Initialize renderer using HEIDIC Resource pointers (for hot-reload support)
+// textureResource can be nullptr for no texture
+int heidic_init_renderer_obj_mesh_with_resources(GLFWwindow* window, void* meshResource, void* textureResource);
 // Render OBJ mesh
 void heidic_render_obj_mesh(GLFWwindow* window);
 // Cleanup OBJ mesh renderer
