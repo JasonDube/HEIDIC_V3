@@ -1,0 +1,93 @@
+// Error Message Test File
+// This file intentionally contains errors to demonstrate improved error reporting
+
+// Test 1: Type mismatch in assignment
+fn test_type_mismatch() {
+    let x: f32 = "hello";  // Error: cannot assign string to f32
+}
+
+// Test 2: Undefined variable
+fn test_undefined_variable() {
+    let result = undefined_var + 10;  // Error: undefined variable
+}
+
+// Test 3: Undefined function
+fn test_undefined_function() {
+    let result = unknown_function(42);  // Error: undefined function
+}
+
+// Test 4: Wrong argument count
+fn helper(x: i32, y: i32): i32 {
+    return x + y;
+}
+
+fn test_wrong_arg_count() {
+    let result = helper(10);  // Error: expected 2 arguments, got 1
+}
+
+// Test 5: Wrong argument type
+fn test_wrong_arg_type() {
+    let result = helper("hello", 42);  // Error: expected i32, got string
+}
+
+// Test 6: Type mismatch in if condition
+fn test_if_condition() {
+    let x: i32 = 10;
+    if x {  // Error: if condition must be bool
+        print("true");
+    }
+}
+
+// Test 7: Return type mismatch
+fn test_return_type(): i32 {
+    return "hello";  // Error: expected i32, got string
+}
+
+// Test 8: Undefined variable in string interpolation
+fn test_string_interpolation() {
+    let name = "World";
+    let msg = "Hello, {undefined_var}!";  // Error: undefined variable in interpolation
+}
+
+// Test 9: Invalid type in string interpolation
+fn test_string_interpolation_type() {
+    let pos: Vec3 = Vec3(1, 2, 3);
+    let msg = "Position: {pos}";  // Error: Vec3 cannot be converted to string
+}
+
+// Test 10: For loop with non-query
+fn test_for_loop() {
+    let arr: [i32] = [1, 2, 3];
+    for entity in arr {  // Error: for loop collection must be a query type
+        print(entity);
+    }
+}
+
+// Test 11: Array type mismatch
+fn test_array_type_mismatch() {
+    let arr: [i32] = [1, 2, "hello"];  // Error: array elements must have same type
+}
+
+// Test 12: Unwrap on non-optional
+fn test_unwrap() {
+    let x: i32 = 10;
+    let y = x.unwrap();  // Error: unwrap() can only be called on optional types
+}
+
+// Test 13: Index on non-array
+fn test_index() {
+    let x: i32 = 10;
+    let y = x[0];  // Error: index operation requires array type
+}
+
+// Test 14: Arithmetic on non-numeric types
+fn test_arithmetic() {
+    let x: string = "hello";
+    let y = x + 5;  // Error: arithmetic operations require numeric types
+}
+
+// Test 15: Logical operation on non-bool
+fn test_logical() {
+    let x: i32 = 10;
+    let y = x && true;  // Error: logical operations require bool types
+}

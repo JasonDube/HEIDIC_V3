@@ -4,6 +4,9 @@
 // Declare resources using zero-boilerplate syntax!
 resource MyMesh: Mesh = "models/eve_1.obj";
 resource MyTexture: Texture = "textures/eve_tex.png";
+// Audio resources (WAV for sounds, OGG for music)
+// resource JumpSound: Sound = "audio/jump.wav";
+// resource BackgroundMusic: Music = "audio/bgm.ogg";
 
 extern fn heidic_glfw_vulkan_hints(): void;
 extern fn heidic_init_renderer_obj_mesh(window: GLFWwindow, objPath: string, texturePath: string): i32;

@@ -1,0 +1,51 @@
+// Optional Types Test
+// Tests the new optional types feature
+
+fn test_optional_declaration(): void {
+    // Declare optional variable
+    let mesh: ?Mesh = load_mesh("model.obj");
+    
+    // Check if optional has value
+    if mesh {
+        // Unwrap and use
+        draw(mesh.unwrap());
+    }
+}
+
+fn test_optional_assignment(): void {
+    let value: ?i32;
+    
+    // Assign value (implicit wrapping)
+    value = 42;
+    
+    // Assign null (std::nullopt)
+    value = null;
+    
+    // Check and use
+    if value {
+        print(value.unwrap());
+        print("\n");
+    }
+}
+
+fn test_optional_return(): void {
+    let result: ?string = find_name("player");
+    
+    if result {
+        print("Found: ");
+        print(result.unwrap());
+        print("\n");
+    } else {
+        print("Not found\n");
+    }
+}
+
+fn test_optional_chain(): void {
+    let mesh: ?Mesh = load_mesh("model.obj");
+    
+    if mesh {
+        let unwrapped = mesh.unwrap();
+        process_mesh(unwrapped);
+    }
+}
+

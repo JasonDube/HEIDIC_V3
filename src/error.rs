@@ -23,6 +23,7 @@ impl SourceLocation {
     }
 }
 
+#[derive(Clone)]
 pub struct ErrorReporter {
     file_path: String,
     source_lines: Vec<String>,
@@ -40,22 +41,41 @@ impl ErrorReporter {
     }
     
     pub fn report_error(&self, location: SourceLocation, message: &str, suggestion: Option<&str>) {
+        self.report_error_with_secondary(location, message, suggestion, None, None);
+    }
+    
+    pub fn report_error_with_secondary(
+        &self, 
+        location: SourceLocation, 
+        message: &str, 
+        suggestion: Option<&str>,
+        secondary_location: Option<SourceLocation>,
+        secondary_label: Option<&str>,
+    ) {
         if location.is_unknown() {
-            eprintln!("Error: {}", message);
+            eprintln!("❌ Error: {}", message);
             if let Some(sug) = suggestion {
-                eprintln!("Suggestion: {}", sug);
+                eprintln!("💡 Suggestion: {}", sug);
             }
+            eprintln!();
             return;
         }
         
-        // Print error header
-        eprintln!("Error at {}:{}:{}:", 
+        // Print error header with emoji for better visibility
+        eprintln!("❌ Error at {}:{}:{}:", 
                  self.file_path, location.line, location.column);
         
-        // Print source line with context
+        // Print source line with context (show previous and next lines if available)
         if location.line > 0 && location.line <= self.source_lines.len() {
+            // Show previous line for context
+            if location.line > 1 {
+                let prev_line = &self.source_lines[location.line - 2];
+                eprintln!("  {} | {}", location.line - 1, prev_line);
+            }
+            
+            // Show current line with error
             let line_content = &self.source_lines[location.line - 1];
-            eprintln!("    {}", line_content);
+            eprintln!("  {} | {}", location.line, line_content);
             
             // Print caret pointing to error location
             let spaces = if location.column > 0 {
@@ -63,24 +83,92 @@ impl ErrorReporter {
             } else {
                 0
             };
-            let caret = " ".repeat(spaces) + &"^".repeat(
-                if location.column > 0 && location.column <= line_content.len() {
-                    // Point to the character or word
+            
+            // Calculate caret width (point to the token/word)
+            let caret_width = if location.column > 0 && location.column <= line_content.len() {
+                // Try to find the end of the current token
+                let remaining = &line_content[spaces..];
+                let mut width = 0;
+                for ch in remaining.chars() {
+                    if ch.is_alphanumeric() || ch == '_' {
+                        width += ch.len_utf8();
+                    } else {
+                        width = width.max(1);
+                        break;
+                    }
+                }
+                width.max(1)
+            } else {
+                1
+            };
+            
+            let line_num_spaces = location.line.to_string().len() + 3; // "  X | "
+            let caret = " ".repeat(line_num_spaces + spaces) + &"^".repeat(caret_width);
+            eprintln!("{}", caret);
+            
+            // Show next line for context
+            if location.line < self.source_lines.len() {
+                let next_line = &self.source_lines[location.line];
+                eprintln!("  {} | {}", location.line + 1, next_line);
+            }
+        }
+        
+        // Print secondary location if provided
+        if let Some(sec_loc) = secondary_location {
+            if !sec_loc.is_unknown() && sec_loc.line > 0 && sec_loc.line <= self.source_lines.len() {
+                let label = secondary_label.unwrap_or("Note: defined here");
+                eprintln!("\n📌 {} at {}:{}:{}:", 
+                         label, self.file_path, sec_loc.line, sec_loc.column);
+                
+                // Show context around secondary location
+                if sec_loc.line > 1 {
+                    let prev_line = &self.source_lines[sec_loc.line - 2];
+                    eprintln!("  {} | {}", sec_loc.line - 1, prev_line);
+                }
+                
+                let line_content = &self.source_lines[sec_loc.line - 1];
+                eprintln!("  {} | {}", sec_loc.line, line_content);
+                
+                // Print caret for secondary location
+                let spaces = if sec_loc.column > 0 {
+                    sec_loc.column - 1
+                } else {
+                    0
+                };
+                
+                let caret_width = if sec_loc.column > 0 && sec_loc.column <= line_content.len() {
                     let remaining = &line_content[spaces..];
-                    remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1)
+                    let mut width = 0;
+                    for ch in remaining.chars() {
+                        if ch.is_alphanumeric() || ch == '_' {
+                            width += ch.len_utf8();
+                        } else {
+                            width = width.max(1);
+                            break;
+                        }
+                    }
+                    width.max(1)
                 } else {
                     1
+                };
+                
+                let line_num_spaces = sec_loc.line.to_string().len() + 3;
+                let caret = " ".repeat(line_num_spaces + spaces) + &"^".repeat(caret_width);
+                eprintln!("{}", caret);
+                
+                if sec_loc.line < self.source_lines.len() {
+                    let next_line = &self.source_lines[sec_loc.line];
+                    eprintln!("  {} | {}", sec_loc.line + 1, next_line);
                 }
-            );
-            eprintln!("    {}", caret);
+            }
         }
         
         // Print error message
-        eprintln!("{}", message);
+        eprintln!("\n{}", message);
         
         // Print suggestion if provided
         if let Some(sug) = suggestion {
-            eprintln!("Suggestion: {}", sug);
+            eprintln!("💡 Suggestion: {}", sug);
         }
         
         eprintln!(); // Blank line for readability

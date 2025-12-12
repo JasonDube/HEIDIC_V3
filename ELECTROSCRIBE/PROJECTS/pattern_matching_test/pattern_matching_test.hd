@@ -1,0 +1,81 @@
+// Pattern Matching Test
+// Tests the new pattern matching feature
+
+fn test_literal_patterns(): void {
+    let x: i32 = 42;
+    
+    match x {
+        0 => {
+            print("Zero\n");
+        }
+        42 => {
+            print("The answer!\n");
+        }
+        value => {
+            print("Other value: ");
+            print(value);
+            print("\n");
+        }
+    }
+}
+
+fn test_bool_patterns(): void {
+    let flag: bool = true;
+    
+    match flag {
+        true => {
+            print("Flag is true\n");
+        }
+        false => {
+            print("Flag is false\n");
+        }
+    }
+}
+
+fn test_wildcard_pattern(): void {
+    let result: i32 = 100;
+    
+    match result {
+        0 => {
+            print("Zero\n");
+        }
+        _ => {
+            print("Non-zero\n");
+        }
+    }
+}
+
+fn test_vulkan_result_pattern(): void {
+    let result: VkResult = VK_SUCCESS;
+    
+    match result {
+        VK_SUCCESS => {
+            print("Success!\n");
+        }
+        VK_ERROR_OUT_OF_MEMORY => {
+            print("Out of memory\n");
+        }
+        _ => {
+            print("Other error\n");
+        }
+    }
+}
+
+fn test_string_patterns(): void {
+    let status: string = "active";
+    
+    match status {
+        "active" => {
+            print("Status is active\n");
+        }
+        "inactive" => {
+            print("Status is inactive\n");
+        }
+        s => {
+            print("Unknown status: ");
+            print(s);
+            print("\n");
+        }
+    }
+}
+

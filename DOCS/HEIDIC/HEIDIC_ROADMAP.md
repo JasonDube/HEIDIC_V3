@@ -124,48 +124,64 @@ system(physics) {
 
 ### 2. Built-in Resource Handles ⭐ **ZERO-BOILERPLATE ASSETS**
 
-**Status:** 🔴 Not Started  
+**Status:** 🟢 **PARTIALLY COMPLETE** - Texture, Mesh, and Audio resources implemented!  
 **Priority:** HIGH  
-**Effort:** ~3-5 days  
+**Effort:** ~3-5 days (core done, extended types remaining)  
 **Impact:** Eliminates 90% of asset loading boilerplate.
+
+**✅ IMPLEMENTED:**
+- ✅ **Texture Resources** - DDS (BC7/BC5/R8), PNG support
+- ✅ **Mesh Resources** - OBJ support (glTF planned)
+- ✅ **Audio Resources** - WAV, OGG, MP3 support (Sound and Music types)
+- ✅ **Resource<T> Template** - Generic wrapper with hot-reload, RAII lifecycle
+- ✅ **Codegen Integration** - Automatic Resource<T> generation
+- ✅ **Hot-Reload Support** - File watching and automatic reload
 
 **Implementation:**
 ```heidic
-resource Image   = "textures/brick.png";      // compile-time loaded
-resource Shader  = "shaders/pbr.frag";        // already SPIR-V embedded
-resource Mesh    = "models/sponza.heidi";     // custom binary format
+resource MyTexture: Texture = "textures/brick.dds";  // ✅ Works!
+resource MyMesh: Mesh = "models/cube.obj";            // ✅ Works!
+resource JumpSound: Sound = "audio/jump.wav";         // ✅ Works!
+resource BGM: Music = "audio/bgm.ogg";                // ✅ Works!
 ```
 
 **Syntax:**
-- `resource Type = "path/to/file";`
+- `resource Name: Type = "path/to/file";`
 - Compile-time resource loading
 - RAII wrapper with handle + GPU object + hot-reload callback
 
 **Codegen:**
-- Generate `Resource<Image>` wrapper class
-- Compile-time file loading (embed or generate load code)
-- Automatic GPU upload for textures/meshes
-- Reference counting for shared resources
-- Hot-reload callback registration
+- ✅ Generates `Resource<TextureResource>`, `Resource<MeshResource>`, `Resource<AudioResource>`
+- ✅ Automatic file loading (lazy load on first access)
+- ✅ Automatic GPU upload for textures/meshes
+- ✅ Hot-reload support (file modification time tracking)
+- ⚠️ Reference counting (not yet implemented - using unique_ptr for now)
 
 **Example:**
 ```heidic
-resource Texture = "textures/brick.png";
-resource Model   = "models/sponza.glb";
+resource MyTexture: Texture = "textures/brick.png";
+resource MyMesh: Mesh = "models/cube.obj";
+resource JumpSound: Sound = "audio/jump.wav";
 
 fn main(): void {
     // Resources are automatically loaded and uploaded to GPU
-    // Use them directly:
-    draw_texture(Texture);
-    draw_model(Model);
+    // Access via generated accessor functions:
+    let tex = get_resource_mytexture();
+    let mesh = get_resource_mymesh();
+    let sound = get_resource_jumpsound();
 }
 ```
 
+**Remaining Work:**
+- ⚠️ glTF mesh support (OBJ works, glTF planned)
+- ⚠️ Shader resources (wrap existing @hot shader system)
+- ⚠️ Reference counting for shared resources (currently unique_ptr)
+
 **Why This Matters:**
-- One-line asset loading forever
-- Automatic GPU upload
-- Built-in hot-reload support
-- Reference counting (no memory leaks)
+- ✅ One-line asset loading forever
+- ✅ Automatic GPU upload
+- ✅ Built-in hot-reload support
+- ⚠️ Reference counting (planned, not yet implemented)
 
 ---
 

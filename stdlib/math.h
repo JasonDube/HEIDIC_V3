@@ -11,6 +11,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>  // For value_ptr
 #include <cstring>
+#include <cmath>  // For sinf, cosf, sqrtf
 
 // Custom types that wrap GLM internally
 // Store data directly for compatibility, convert to GLM when needed
@@ -129,5 +130,22 @@ extern "C" {
     Mat4 eden_mat4_rotate_z(float angle);
     Mat4 eden_mat4_mul(Mat4 a, Mat4 b);
     Mat4 eden_mat4_translate(Vec3 translation);
+    
+    // Math helper functions for HEIDIC
+    inline float heidic_sin(float radians) {
+        return sinf(radians);
+    }
+    
+    inline float heidic_cos(float radians) {
+        return cosf(radians);
+    }
+    
+    inline float heidic_sqrt(float value) {
+        return sqrtf(value);
+    }
+    
+    inline float heidic_convert_degrees_to_radians(float degrees) {
+        return degrees * 3.14159265358979323846f / 180.0f;
+    }
 }
 

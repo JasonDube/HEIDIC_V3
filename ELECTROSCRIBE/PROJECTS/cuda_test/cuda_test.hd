@@ -1,0 +1,30 @@
+// CUDA/OptiX Interop Test
+
+@[cuda]
+component_soa Position {
+    x: [f32],
+    y: [f32],
+    z: [f32]
+}
+
+@[cuda]
+component_soa Velocity {
+    x: [f32],
+    y: [f32],
+    z: [f32]
+}
+
+@[launch(kernel = update_physics)]
+fn update_physics(q: query<Position, Velocity>): void {
+    for entity in q {
+        entity.Position.x += entity.Velocity.x * 0.016;
+        entity.Position.y += entity.Velocity.y * 0.016;
+        entity.Position.z += entity.Velocity.z * 0.016;
+    }
+}
+
+fn main(): void {
+    // This will generate CUDA kernel code and launch wrapper
+    // update_physics_launch(query);
+}
+

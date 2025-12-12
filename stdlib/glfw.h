@@ -32,6 +32,12 @@
 #define GLFW_KEY_S 83
 #define GLFW_KEY_D 68
 
+// GLFW cursor modes
+#define GLFW_CURSOR 0x00033001
+#define GLFW_CURSOR_NORMAL 0x00034001
+#define GLFW_CURSOR_HIDDEN 0x00034002
+#define GLFW_CURSOR_DISABLED 0x00034003
+
 // GLFW functions are already declared in glfw3.h
 // We don't need to redeclare them - just use GLFW's native declarations
 // The functions are available via the GLFW header

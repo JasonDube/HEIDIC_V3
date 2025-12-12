@@ -85,13 +85,29 @@ resource Shader = "shaders/pbr.frag";
 
 ---
 
-### Phase 2: Extended Resources (Later)
+### Phase 2: Extended Resources
 
-#### 4. **Audio** (Future)
+#### 4. **Audio** ✅ **IMPLEMENTED**
 ```heidic
-resource Sound = "audio/jump.wav";
-resource Music = "audio/bgm.ogg";
+resource JumpSound: Sound = "audio/jump.wav";
+resource BackgroundMusic: Music = "audio/bgm.ogg";
 ```
+
+**Supported Formats:**
+- **WAV** - Uncompressed audio (good for short sound effects)
+- **OGG** - Compressed audio (good for background music)
+- **MP3** - Compressed audio (also supported)
+
+**Generated Code:**
+- Both `Sound` and `Music` map to `AudioResource` class
+- Automatically detects format from file extension
+- Loads audio data into memory (WAV) or sets up streaming (OGG)
+- Hot-reload support (reloads on file change)
+- Uses SDL3 audio API (if available)
+
+**Implementation:**
+- `stdlib/audio_resource.h` - AudioResource class
+- Codegen updated to support `Sound` and `Music` resource types
 
 #### 5. **Fonts** (Future)
 ```heidic

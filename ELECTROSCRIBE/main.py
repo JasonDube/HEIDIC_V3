@@ -105,6 +105,7 @@ TERMINAL_HEADER_HEIGHT = 32
 TERMINAL_HEADER_COLOR = (90, 150, 90)
 TERMINAL_COPY_BTN_WIDTH = 28
 TERMINAL_COPY_BTN_COLOR = (60, 120, 60)
+TERMINAL_COPY_ALL_BTN_WIDTH = 32  # Button for copying both log and terminal
 TERMINAL_MAX_LINES = 500
 CPP_BTN_WIDTH = 40
 CPP_BTN_HEIGHT = 24
@@ -1313,6 +1314,8 @@ class Editor:
         # === TERMINAL SECTION (bottom half) ===
         terminal_header_y = terminal_y
         terminal_copy_btn = pygame.Rect(MARGIN, terminal_header_y + (TERMINAL_HEADER_HEIGHT - 22) // 2, TERMINAL_COPY_BTN_WIDTH, 22)
+        # Button to copy both log and terminal output (positioned after the regular copy button)
+        terminal_copy_all_btn = pygame.Rect(MARGIN + TERMINAL_COPY_BTN_WIDTH + 4, terminal_header_y + (TERMINAL_HEADER_HEIGHT - 22) // 2, TERMINAL_COPY_ALL_BTN_WIDTH, 22)
         v_sb_term = self.calc_terminal_vscrollbar(panel_width, terminal_height)
         h_sb_term = self.calc_terminal_hscrollbar(panel_width, terminal_height, terminal_y)
         self._draw_text_panel(
@@ -1320,6 +1323,11 @@ class Editor:
             self.terminal_vscroll, self.terminal_hscroll, v_sb_term, h_sb_term,
             terminal_copy_btn, TERMINAL_COPY_BTN_COLOR
         )
+        # Draw the "copy all" button (>>) separately
+        pygame.draw.rect(panel_surface, TERMINAL_COPY_BTN_COLOR, terminal_copy_all_btn)
+        btn_text = self.font.render(">>", True, (230, 230, 230))
+        btn_text_rect = btn_text.get_rect(center=terminal_copy_all_btn.center)
+        panel_surface.blit(btn_text, btn_text_rect)
         
         screen.blit(panel_surface, (0, 0))
     
@@ -1375,6 +1383,8 @@ class Editor:
         # === TERMINAL SECTION (bottom half) ===
         terminal_header_y = terminal_y
         terminal_copy_btn = pygame.Rect(MARGIN, terminal_header_y + (TERMINAL_HEADER_HEIGHT - 22) // 2, TERMINAL_COPY_BTN_WIDTH, 22)
+        # Button to copy both log and terminal output (positioned after the regular copy button)
+        terminal_copy_all_btn = pygame.Rect(MARGIN + TERMINAL_COPY_BTN_WIDTH + 4, terminal_header_y + (TERMINAL_HEADER_HEIGHT - 22) // 2, TERMINAL_COPY_ALL_BTN_WIDTH, 22)
         v_sb_term = self.calc_terminal_vscrollbar(panel_width, terminal_height)
         h_sb_term = self.calc_terminal_hscrollbar(panel_width, terminal_height, terminal_y)
         self._draw_text_panel(
@@ -1382,6 +1392,11 @@ class Editor:
             self.terminal_vscroll, self.terminal_hscroll, v_sb_term, h_sb_term,
             terminal_copy_btn, TERMINAL_COPY_BTN_COLOR
         )
+        # Draw the "copy all" button (>>) separately
+        pygame.draw.rect(panel_surface, TERMINAL_COPY_BTN_COLOR, terminal_copy_all_btn)
+        btn_text = self.font.render(">>", True, (230, 230, 230))
+        btn_text_rect = btn_text.get_rect(center=terminal_copy_all_btn.center)
+        panel_surface.blit(btn_text, btn_text_rect)
 
         screen.blit(panel_surface, (0, 0))
 
@@ -1446,6 +1461,8 @@ class Editor:
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT,
                             text=True,
+                            encoding='utf-8',
+                            errors='replace',  # Replace invalid characters instead of failing
                             bufsize=0,  # Unbuffered
                             shell=False,
                             env=env,
@@ -1767,11 +1784,22 @@ class Editor:
             else:
                 build_cmd.extend(["-I", glfw_path])
         
-        # Add SDL3/SDL2 include path if UI windows are enabled (prefer SDL3)
+        # Check if we have audio resources (need SDL3 for audio) - check early for include paths
+        has_audio_resources = False
+        if os.path.exists(cpp_path):
+            try:
+                with open(cpp_path, 'r', encoding='utf-8') as f:
+                    cpp_content = f.read()
+                    if 'audio_resource.h' in cpp_content or 'AudioResource' in cpp_content:
+                        has_audio_resources = True
+            except:
+                pass
+        
+        # Add SDL3/SDL2 include path if UI windows are enabled OR if we have audio resources (prefer SDL3)
         sdl3_path = None
         sdl2_path = None
         use_sdl3 = False
-        if ui_windows_enabled:
+        if ui_windows_enabled or has_audio_resources:
             # Try SDL3 first
             sdl3_path = os.environ.get("SDL3_PATH")
             if not sdl3_path:
@@ -1785,7 +1813,10 @@ class Editor:
                 use_sdl3 = True
                 sdl3_include = os.path.join(sdl3_path, "include")
                 build_cmd.extend(["-I", sdl3_include])
-                self.log_lines.append(f"Using SDL3 include: {sdl3_include}")
+                if has_audio_resources:
+                    self.log_lines.append(f"Using SDL3 include: {sdl3_include} (required for audio)")
+                else:
+                    self.log_lines.append(f"Using SDL3 include: {sdl3_include}")
             else:
                 # Fallback to SDL2
                 sdl2_path = os.environ.get("SDL2_PATH")
@@ -1805,7 +1836,10 @@ class Editor:
                         build_cmd.extend(["-I", sdl2_path])
                         self.log_lines.append(f"Using SDL2 include: {sdl2_path}")
                 else:
-                    self.log_lines.append("WARNING: SDL3/SDL2 not found - UI windows may not work. Set SDL3_PATH or SDL2_PATH environment variable.")
+                    if has_audio_resources:
+                        self.log_lines.append("WARNING: SDL3/SDL2 not found - audio playback may not work. Set SDL3_PATH or SDL2_PATH environment variable.")
+                    else:
+                        self.log_lines.append("WARNING: SDL3/SDL2 not found - UI windows may not work. Set SDL3_PATH or SDL2_PATH environment variable.")
         
         # Add ImGui include path if UI windows are enabled
         imgui_path = None
@@ -1882,17 +1916,25 @@ class Editor:
                 else:
                     self.log_lines.append(f"WARNING: ImGui source not found: {src_path}")
         
-        # Copy SDL3.dll to project directory if UI windows are enabled and using SDL3
-        if ui_windows_enabled and use_sdl3 and sdl3_path:
+        # has_audio_resources was already checked above for include paths
+        
+        # Copy SDL3.dll to project directory if UI windows are enabled OR if we have audio resources
+        if (ui_windows_enabled or has_audio_resources) and use_sdl3 and sdl3_path:
             sdl3_dll_path = os.path.join(sdl3_path, "bin", "x64", "SDL3.dll")
             if os.path.exists(sdl3_dll_path):
                 project_dll_path = os.path.join(project_dir, "SDL3.dll")
                 try:
                     import shutil
                     shutil.copy2(sdl3_dll_path, project_dll_path)
-                    self.log_lines.append(f"Copied SDL3.dll to project directory")
+                    if has_audio_resources:
+                        self.log_lines.append(f"Copied SDL3.dll to project directory (required for audio)")
+                    else:
+                        self.log_lines.append(f"Copied SDL3.dll to project directory")
                 except Exception as e:
                     self.log_lines.append(f"WARNING: Could not copy SDL3.dll: {e}")
+            else:
+                if has_audio_resources:
+                    self.log_lines.append(f"WARNING: SDL3.dll not found at {sdl3_dll_path} - audio playback may not work")
         
         # Add output - build to project directory
         exe_name = os.path.splitext(os.path.basename(hd_path))[0] + ".exe"
@@ -1924,8 +1966,9 @@ class Editor:
         # Add libraries to link
         build_cmd.extend(["-lvulkan-1", "-lglfw3", "-lgdi32"])
         
-        # Add SDL3/SDL2 library path and linking if UI windows are enabled
-        if ui_windows_enabled:
+        # Add SDL3/SDL2 library path and linking if UI windows are enabled OR if we have audio resources
+        # (has_audio_resources was already checked above for DLL copy)
+        if ui_windows_enabled or has_audio_resources:
             if use_sdl3 and sdl3_path:
                 # Try common SDL3 library locations
                 for lib_path in [
@@ -2266,6 +2309,8 @@ class Editor:
                 cwd=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
                 capture_output=capture_output,
                 text=True,
+                encoding='utf-8',
+                errors='replace',  # Replace invalid characters instead of failing
                 shell=False,
             )
             if proc.returncode != 0:
@@ -2969,6 +3014,22 @@ def main():
                             if terminal_copy_btn.collidepoint(mx, my):
                                 term_text = "\n".join(editor.terminal_lines) if editor.terminal_lines else ""
                                 editor._copy_to_clipboard(term_text, "Copied terminal to clipboard", "Terminal is empty")
+                            # Terminal copy all button (>>) - copies both log and terminal
+                            terminal_copy_all_btn = pygame.Rect(MARGIN + TERMINAL_COPY_BTN_WIDTH + 4, terminal_y + (TERMINAL_HEADER_HEIGHT - 22) // 2, TERMINAL_COPY_ALL_BTN_WIDTH, 22)
+                            if terminal_copy_all_btn.collidepoint(mx, my):
+                                # Collect both log and terminal output
+                                log_text = "\n".join(editor.log_lines) if editor.log_lines else ""
+                                term_text = "\n".join(editor.terminal_lines) if editor.terminal_lines else ""
+                                # Combine with separator
+                                combined_text = ""
+                                if log_text:
+                                    combined_text += "=== COMPILER OUTPUT ===\n" + log_text
+                                if term_text:
+                                    if combined_text:
+                                        combined_text += "\n\n=== CONSOLE OUTPUT ===\n" + term_text
+                                    else:
+                                        combined_text += "=== CONSOLE OUTPUT ===\n" + term_text
+                                editor._copy_to_clipboard(combined_text, "Copied all output (log + terminal) to clipboard", "Both log and terminal are empty")
                             # Terminal scrollbars
                             if v_sb_term and terminal_y + TERMINAL_HEADER_HEIGHT <= my < SCREEN_HEIGHT:
                                 scrollbar_y_pos = terminal_y + TERMINAL_HEADER_HEIGHT + MARGIN

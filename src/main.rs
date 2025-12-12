@@ -59,13 +59,16 @@ fn compile_file(file_path: &str) -> Result<()> {
     let mut lexer = Lexer::new(&source);
     let tokens = lexer.tokenize()?;
     
-    // Parsing
+    // Initialize error reporter (shared between parser and type checker)
+    let error_reporter = ErrorReporter::new(file_path)
+        .with_context(|| format!("Failed to initialize error reporter for: {}", file_path))?;
+    
+    // Parsing with error reporting
     let mut parser = Parser::new(tokens);
+    parser.set_error_reporter(error_reporter.clone());
     let ast = parser.parse()?;
     
     // Type checking with error reporting
-    let error_reporter = ErrorReporter::new(file_path)
-        .with_context(|| format!("Failed to initialize error reporter for: {}", file_path))?;
     let mut type_checker = TypeChecker::new();
     type_checker.set_error_reporter(error_reporter);
     type_checker.check(&ast)?;
@@ -94,8 +97,9 @@ fn compile_file(file_path: &str) -> Result<()> {
     let hot_systems = codegen.get_hot_systems();
     if !hot_systems.is_empty() {
         println!("\nGenerating hot-reloadable system DLLs...");
-        for system in hot_systems {
-            let dll_cpp = codegen.generate_hot_system_dll(system);
+        let hot_systems_clone = hot_systems.clone();
+        for system in hot_systems_clone {
+            let dll_cpp = codegen.generate_hot_system_dll(&system);
             let dll_name = format!("{}_hot.dll.cpp", system.name.to_lowercase());
             let dll_path = source_dir.join(&dll_name);
             

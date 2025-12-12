@@ -1,0 +1,40 @@
+// Type Inference Test
+// Tests the new type inference features
+
+fn test_array_literal_inference(): void {
+    // Array literal type inference - should infer [i32]
+    let numbers = [1, 2, 3, 4, 5];
+    
+    // Array literal with floats - should infer [f32]
+    let floats = [1.0, 2.5, 3.14];
+    
+    // Array literal with mixed types should error
+    // let mixed = [1, 2.0];  // This should error
+    
+    // Empty array should require explicit type
+    // let empty = [];  // This should error - need explicit type
+    let empty: [i32] = [];
+}
+
+fn test_function_return_inference(): void {
+    // Function return type inference - already works
+    let result = helper_function();
+    // result should be inferred as i32
+}
+
+fn helper_function(): i32 {
+    return 42;
+}
+
+fn test_struct_constructor_inference(): void {
+    // Struct constructor inference - should infer Vec3
+    // let pos = Vec3(1.0, 2.0, 3.0);  // Would infer Vec3 if struct literals were fully implemented
+}
+
+fn test_explicit_types_still_work(): void {
+    // Explicit types should still work and be validated
+    let x: i32 = 10;
+    let y: f32 = 3.14;
+    let arr: [i32] = [1, 2, 3];
+}
+

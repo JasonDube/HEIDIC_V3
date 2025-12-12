@@ -1,0 +1,108 @@
+// Query Iteration Syntax Test
+// Tests: for entity in q { ... } with various scenarios
+
+component Position {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+component Velocity {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+component_soa VelocitySOA {
+    x: [f32],
+    y: [f32],
+    z: [f32]
+}
+
+component Health {
+    current: i32,
+    max: i32
+}
+
+// Test 1: Basic query iteration with AoS components
+fn update_physics(q: query<Position, Velocity>): void {
+    for entity in q {
+        entity.Position.x += entity.Velocity.x * 0.016;
+        entity.Position.y += entity.Velocity.y * 0.016;
+        entity.Position.z += entity.Velocity.z * 0.016;
+    }
+}
+
+// Test 2: Query iteration with conditional logic
+fn update_physics_with_bounds(q: query<Position, Velocity>): void {
+    for entity in q {
+        entity.Position.x += entity.Velocity.x * 0.016;
+        entity.Position.y += entity.Velocity.y * 0.016;
+        entity.Position.z += entity.Velocity.z * 0.016;
+        
+        // Test nested if statement
+        if entity.Position.x > 100.0 {
+            entity.Velocity.x = -entity.Velocity.x;
+        }
+        if entity.Position.x < -100.0 {
+            entity.Velocity.x = -entity.Velocity.x;
+        }
+    }
+}
+
+// Test 3: Query with SOA component
+fn update_physics_soa(q: query<Position, VelocitySOA>): void {
+    for entity in q {
+        // SOA access: entity.VelocitySOA.x should work transparently
+        entity.Position.x += entity.VelocitySOA.x * 0.016;
+        entity.Position.y += entity.VelocitySOA.y * 0.016;
+        entity.Position.z += entity.VelocitySOA.z * 0.016;
+    }
+}
+
+// Test 4: Query with multiple components
+fn update_health_and_physics(q: query<Position, Velocity, Health>): void {
+    for entity in q {
+        // Update position
+        entity.Position.x += entity.Velocity.x * 0.016;
+        
+        // Update health (test multiple component access)
+        if entity.Health.current < entity.Health.max {
+            entity.Health.current = entity.Health.current + 1;
+        }
+    }
+}
+
+// Test 5: Complex nested logic
+fn complex_update(q: query<Position, Velocity, Health>): void {
+    for entity in q {
+        // Update physics
+        entity.Position.x += entity.Velocity.x * 0.016;
+        
+        // Nested if with multiple conditions
+        if entity.Position.x > 50.0 {
+            if entity.Health.current > 0 {
+                entity.Velocity.x = entity.Velocity.x * 0.9;
+            }
+        }
+        
+        // Test binary operations with entity access
+        let speed: f32 = entity.Velocity.x * entity.Velocity.x + entity.Velocity.y * entity.Velocity.y;
+        if speed > 100.0 {
+            entity.Velocity.x = entity.Velocity.x * 0.5;
+            entity.Velocity.y = entity.Velocity.y * 0.5;
+        }
+    }
+}
+
+fn main(): void {
+    print("=== Query Iteration Syntax Test ===\n");
+    print("Testing query iteration with:\n");
+    print("  - Basic iteration\n");
+    print("  - Nested if statements\n");
+    print("  - SOA components\n");
+    print("  - Multiple components\n");
+    print("  - Complex nested logic\n");
+    print("\n");
+    print("✅ All query iteration tests compiled successfully!\n");
+}

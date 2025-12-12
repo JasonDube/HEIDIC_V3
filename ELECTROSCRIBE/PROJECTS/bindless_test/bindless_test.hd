@@ -1,0 +1,17 @@
+// Test file for Automatic Bindless Integration
+// This verifies that Image resources are automatically registered in the bindless heap
+
+resource Image albedo = "textures/brick.png";
+resource Image normal = "textures/brick_norm.png";
+resource Image roughness = "textures/brick_rough.png";
+
+// These should automatically:
+// 1. Generate index constants: ALBEDO_TEXTURE_INDEX, NORMAL_TEXTURE_INDEX, ROUGHNESS_TEXTURE_INDEX
+// 2. Register in global bindless descriptor set
+// 3. Be accessible in shaders via bindless_texture(ALBEDO_TEXTURE_INDEX)
+
+fn main(): void {
+    // Bindless system should be initialized automatically in main()
+    // Images are registered in bindless heap at startup
+}
+

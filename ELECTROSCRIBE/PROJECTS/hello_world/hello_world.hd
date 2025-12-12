@@ -1,0 +1,6 @@
+// Hello World - The simplest HEIDIC program
+// This demonstrates the most basic console program possible
+
+fn main(): void {
+    print("Hello, World!\n");
+}

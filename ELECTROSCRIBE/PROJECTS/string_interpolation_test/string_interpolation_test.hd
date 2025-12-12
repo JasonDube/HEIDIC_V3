@@ -1,0 +1,36 @@
+// String Interpolation Test
+// Tests the new string interpolation feature
+
+fn test_string_interpolation(): void {
+    let name: string = "Player";
+    let health: i32 = 100;
+    let score: f32 = 1234.5;
+    let is_alive: bool = true;
+    
+    // String interpolation with variables
+    let greeting = "Hello, {name}!";
+    let status = "Health: {health}, Score: {score}";
+    let alive_status = "Player is {is_alive}";
+    
+    // Print interpolated strings
+    print(greeting);
+    print("\n");
+    print(status);
+    print("\n");
+    print(alive_status);
+    print("\n");
+}
+
+fn test_string_interpolation_literals(): void {
+    let x: i32 = 42;
+    
+    // Mix of literals and variables
+    let msg = "The answer is {x}";
+    let msg2 = "Value: {x} is correct";
+    
+    print(msg);
+    print("\n");
+    print(msg2);
+    print("\n");
+}
+

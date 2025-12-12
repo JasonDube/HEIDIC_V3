@@ -1,0 +1,24 @@
+// Test file for Memory Ownership Semantics
+// This verifies that frame-scoped allocations cannot be returned from functions
+
+fn test_valid_usage(frame: FrameArena): void {
+    let positions = frame.alloc_array<Vec3>(100);
+    // This is valid - positions is used within the function scope
+    // positions will be automatically freed when frame goes out of scope
+}
+
+fn test_invalid_return(frame: FrameArena): [Vec3] {
+    let positions = frame.alloc_array<Vec3>(100);
+    return positions;  // ERROR: Cannot return frame-scoped allocation
+}
+
+fn test_invalid_return_direct(frame: FrameArena): [Vec3] {
+    return frame.alloc_array<Vec3>(100);  // ERROR: Cannot return frame-scoped allocation directly
+}
+
+fn main(): void {
+    let frame: FrameArena;
+    test_valid_usage(frame);
+    // test_invalid_return(frame);  // Should cause compile error
+}
+

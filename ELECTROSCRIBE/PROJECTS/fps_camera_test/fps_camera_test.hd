@@ -1,0 +1,593 @@
+// HEIDIC Project: FPS Camera Test
+// FPS camera movement with mouse look and WASD controls
+// Programmatically created floor cube
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer_fps(window: GLFWwindow): i32;
+extern fn heidic_render_fps(window: GLFWwindow, camera_pos_x: f32, camera_pos_y: f32, camera_pos_z: f32, camera_yaw: f32, camera_pitch: f32): void;
+extern fn heidic_cleanup_renderer_fps(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+extern fn heidic_get_cursor_x(window: GLFWwindow): f64;
+extern fn heidic_get_cursor_y(window: GLFWwindow): f64;
+extern fn glfwSetCursorPos(window: GLFWwindow, xpos: f64, ypos: f64): void;
+extern fn glfwSetInputMode(window: GLFWwindow, mode: i32, value: i32): void;
+extern fn heidic_hide_cursor(window: GLFWwindow): void;
+extern fn heidic_sin(radians: f32): f32;
+extern fn heidic_cos(radians: f32): f32;
+extern fn heidic_sqrt(value: f32): f32;
+extern fn heidic_convert_degrees_to_radians(degrees: f32): f32;
+
+// Neuroshell UI functions
+extern fn neuroshell_init(window: GLFWwindow): i32;
+extern fn neuroshell_update(delta_time: f32): void;
+extern fn neuroshell_shutdown(): void;
+extern fn neuroshell_is_enabled(): bool;
+extern fn neuroshell_create_image(x: f32, y: f32, width: f32, height: f32, texture_path: string): i32;
+extern fn neuroshell_set_visible(element_id: i32, visible: bool): void;
+extern fn neuroshell_set_depth(element_id: i32, depth: f32): void;
+
+// Raycast and cube position functions (for pickup system)
+extern fn heidic_raycast_cube_hit_center(window: GLFWwindow, cube_x: f32, cube_y: f32, cube_z: f32, cube_sx: f32, cube_sy: f32, cube_sz: f32): i32;
+extern fn heidic_raycast_cube_hit_point_center(window: GLFWwindow, cube_x: f32, cube_y: f32, cube_z: f32, cube_sx: f32, cube_sy: f32, cube_sz: f32): Vec3;
+extern fn heidic_get_cube_position(cube_index: i32): Vec3;
+extern fn heidic_set_cube_position(cube_index: i32, x: f32, y: f32, z: f32): void;
+extern fn heidic_set_cube_color(cube_index: i32, r: f32, g: f32, b: f32): void;
+extern fn heidic_restore_cube_color(cube_index: i32): void;
+extern fn heidic_raycast_downward_distance(x: f32, y: f32, z: f32): f32;
+extern fn heidic_raycast_downward_big_cube(x: f32, y: f32, z: f32): i32;  // Returns cube index or -1
+extern fn heidic_get_cube_size(cube_index: i32): f32;
+extern fn heidic_get_center_ray_origin(window: GLFWwindow): Vec3;
+extern fn heidic_get_center_ray_dir(window: GLFWwindow): Vec3;
+extern fn heidic_draw_line(x1: f32, y1: f32, z1: f32, x2: f32, y2: f32, z2: f32, r: f32, g: f32, b: f32): void;
+
+// Camera state - using individual variables for now (struct literals not fully implemented)
+// position: Vec3
+// yaw: f32 - Horizontal rotation (degrees)
+// pitch: f32 - Vertical rotation (degrees)
+// speed: f32 - Movement speed
+// mouse_sensitivity: f32
+
+fn main(): void {
+    print("=== FPS Camera Test ===\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+    
+    print("Creating window (1280x720)...\n");
+    let window: GLFWwindow = glfwCreateWindow(1280, 720, "FPS Camera Test - WASD to move, Mouse to look", 0, 0);
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Initializing renderer...\n");
+
+    let renderer_init: i32 = heidic_init_renderer_fps(window);
+    if renderer_init == 0 {
+        print("Failed to initialize renderer!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("Renderer initialized!\n");
+    
+    // Initialize Neuroshell for crosshair
+    print("Initializing Neuroshell...\n");
+    let neuroshell_init_result: i32 = neuroshell_init(window);
+    let crosshair_id: i32 = 0;
+    if (neuroshell_init_result == 0) {
+        print("WARNING: Neuroshell initialization failed - crosshair will not be visible\n");
+    } else {
+        print("Neuroshell initialized!\n");
+        
+        // Create crosshair image in center of screen
+        // Window is 1280x720, so center is at (640, 360)
+        // Crosshair image is 64x64, so position it at (640-32, 360-32) = (608, 328)
+        let crosshair_size: f32 = 64.0;
+        let center_x: f32 = 640.0 - crosshair_size / 2.0;
+        let center_y: f32 = 360.0 - crosshair_size / 2.0;
+        crosshair_id = neuroshell_create_image(center_x, center_y, crosshair_size, crosshair_size, "crosshair.png");
+        
+        if (crosshair_id != 0) {
+            // Make sure crosshair is visible and on top
+            neuroshell_set_visible(crosshair_id, true);
+            neuroshell_set_depth(crosshair_id, 100.0);  // High depth = renders on top
+            print("Crosshair created successfully!\n");
+        } else {
+            print("WARNING: Failed to create crosshair image!\n");
+        }
+    }
+    
+    // Initialize camera state
+    let camera_pos: Vec3 = Vec3(0.0, 2.0, 5.0);  // Start position (slightly above ground, looking at origin)
+    let camera_yaw: f32 = 0.0;              // Yaw (facing forward)
+    let camera_pitch: f32 = -20.0;          // Pitch (looking slightly down)
+    let camera_speed: f32 = 5.0;            // Movement speed
+    let camera_mouse_sensitivity: f32 = 0.1; // Mouse sensitivity
+    
+    // Pickup system state
+    let selected_cube_index: i32 = -1;      // -1 = no selection, 0-8 = cube index
+    let picked_up_cube_index: i32 = -1;     // -1 = nothing picked up, 0-8 = cube index
+    let pickup_distance: f32 = 0.0;         // Distance from camera to cube when picked up (along forward direction)
+    let num_cubes: i32 = 14;                // Number of colored cubes (9 big + 5 small)
+    let last_selected_cube: i32 = -1;       // Track last selected cube for debug output and color changes
+    let frame_count: i32 = 0;               // Frame counter for debug output
+    
+    // Variables for mouse input
+    let last_mouse_x: f64 = 640.0;  // Center of 1280px wide window
+    let last_mouse_y: f64 = 360.0;  // Center of 720px tall window
+    let first_mouse: bool = true;
+    
+    // Set cursor to center and disable it (capture mode)
+    glfwSetCursorPos(window, last_mouse_x, last_mouse_y);
+    // Hide cursor using helper function (hides cursor and captures it)
+    heidic_hide_cursor(window);
+    
+    print("Starting render loop...\n");
+    print("Controls:\n");
+    print("  W - Move forward\n");
+    print("  S - Move backward\n");
+    print("  A - Strafe left\n");
+    print("  D - Strafe right\n");
+    print("  Mouse - Look around\n");
+    print("  SPACE - Pick up/drop cube (aim at cube with crosshair)\n");
+    print("  ESC - Exit\n");
+    print("\n");
+    
+    let delta_time: f32 = 0.016;  // ~60 FPS
+    
+    while glfwWindowShouldClose(window) == 0 {
+        glfwPollEvents();
+        
+        // Keep cursor hidden (in case it gets reset)
+        heidic_hide_cursor(window);
+        
+        // Update Neuroshell
+        let delta_time: f32 = 0.016;  // ~60 FPS
+        neuroshell_update(delta_time);
+
+        // ESC to exit
+        if glfwGetKey(window, 256) == 1 {  // GLFW_KEY_ESCAPE
+            glfwSetWindowShouldClose(window, 1);
+        }
+        
+        // Get current mouse position
+        let mouse_x: f64 = heidic_get_cursor_x(window);
+        let mouse_y: f64 = heidic_get_cursor_y(window);
+        
+        // Handle mouse look
+        if first_mouse {
+            last_mouse_x = mouse_x;
+            last_mouse_y = mouse_y;
+            first_mouse = false;
+        }
+        
+        let xoffset: f64 = mouse_x - last_mouse_x;
+        let yoffset: f64 = last_mouse_y - mouse_y;  // Positive when mouse moves up (screen coordinates)
+        
+        last_mouse_x = mouse_x;
+        last_mouse_y = mouse_y;
+        
+        // Convert f64 to f32 for calculations
+        let xoffset_f32: f32 = xoffset;  // Implicit conversion
+        let yoffset_f32: f32 = yoffset;
+        
+        // Update camera rotation
+        camera_yaw = camera_yaw + xoffset_f32 * camera_mouse_sensitivity;
+        // Standard FPS: mouse up (positive yoffset) increases pitch (looks up)
+        camera_pitch = camera_pitch + yoffset_f32 * camera_mouse_sensitivity;
+        
+        // Clamp pitch to prevent flipping
+        if camera_pitch > 89.0 {
+            camera_pitch = 89.0;
+        }
+        if camera_pitch < -89.0 {
+            camera_pitch = -89.0;
+        }
+        
+        // Calculate forward and right vectors from yaw and pitch
+        // Convert degrees to radians for calculations
+        let yaw_rad: f32 = heidic_convert_degrees_to_radians(camera_yaw);
+        let pitch_rad: f32 = heidic_convert_degrees_to_radians(camera_pitch);
+        
+        // Forward vector for movement (horizontal only, based on yaw, ignores pitch)
+        // This ensures W/S only moves forward/backward horizontally, not up/down
+        let forward: Vec3 = Vec3(
+            heidic_sin(yaw_rad),
+            0.0,  // No vertical component - movement is always horizontal
+            -heidic_cos(yaw_rad)
+        );
+        
+        // Right vector (perpendicular to forward, for strafing)
+        let right_yaw: f32 = yaw_rad + 1.57079632679;  // yaw + 90 degrees in radians
+        let right: Vec3 = Vec3(
+            heidic_sin(right_yaw),
+            0.0,
+            -heidic_cos(right_yaw)
+        );
+        
+        // Normalize vectors
+        let forward_len: f32 = heidic_sqrt(forward.x * forward.x + forward.y * forward.y + forward.z * forward.z);
+        if forward_len > 0.0 {
+            forward.x = forward.x / forward_len;
+            forward.y = forward.y / forward_len;
+            forward.z = forward.z / forward_len;
+        }
+        
+        let right_len: f32 = heidic_sqrt(right.x * right.x + right.y * right.y + right.z * right.z);
+        if right_len > 0.0 {
+            right.x = right.x / right_len;
+            right.y = right.y / right_len;
+            right.z = right.z / right_len;
+        }
+        
+        // Handle keyboard input for movement
+        let velocity: Vec3 = Vec3(0.0, 0.0, 0.0);
+        
+        // W - Move forward
+        if glfwGetKey(window, 87) == 1 {  // GLFW_KEY_W
+            velocity.x = velocity.x + forward.x * camera_speed * delta_time;
+            velocity.y = velocity.y + forward.y * camera_speed * delta_time;
+            velocity.z = velocity.z + forward.z * camera_speed * delta_time;
+        }
+        
+        // S - Move backward
+        if glfwGetKey(window, 83) == 1 {  // GLFW_KEY_S
+            velocity.x = velocity.x - forward.x * camera_speed * delta_time;
+            velocity.y = velocity.y - forward.y * camera_speed * delta_time;
+            velocity.z = velocity.z - forward.z * camera_speed * delta_time;
+        }
+        
+        // A - Strafe left
+        if glfwGetKey(window, 65) == 1 {  // GLFW_KEY_A
+            velocity.x = velocity.x - right.x * camera_speed * delta_time;
+            velocity.y = velocity.y - right.y * camera_speed * delta_time;
+            velocity.z = velocity.z - right.z * camera_speed * delta_time;
+        }
+        
+        // D - Strafe right
+        if glfwGetKey(window, 68) == 1 {  // GLFW_KEY_D
+            velocity.x = velocity.x + right.x * camera_speed * delta_time;
+            velocity.y = velocity.y + right.y * camera_speed * delta_time;
+            velocity.z = velocity.z + right.z * camera_speed * delta_time;
+        }
+        
+        // Update camera position
+        camera_pos.x = camera_pos.x + velocity.x;
+        camera_pos.y = camera_pos.y + velocity.y;
+        camera_pos.z = camera_pos.z + velocity.z;
+        
+        // Keep camera above ground (simple ground plane at y=0)
+        if camera_pos.y < 0.5 {
+            camera_pos.y = 0.5;
+        }
+        
+        // Render scene with camera FIRST (this stores matrices for raycast)
+        heidic_render_fps(window, camera_pos.x, camera_pos.y, camera_pos.z, camera_yaw, camera_pitch);
+        
+        // ====================================================================
+        // PICKUP SYSTEM: Raycast from crosshair and handle cube pickup/drop
+        // ====================================================================
+        // IMPORTANT: Raycast happens AFTER render, so it uses matrices from current frame
+        
+        // Cast ray from crosshair and check all cubes for selection
+        // IMPORTANT: If a cube is already picked up, keep it selected even if raycast doesn't hit
+        // (because the cube has moved away from the ray)
+        let closest_hit_distance: f32 = 1000.0;  // Max ray distance
+        let new_selected_cube: i32 = -1;
+        
+        let cube_index: i32 = 0;
+        while cube_index < num_cubes {
+            // Get cube position and size from C++ (returns Vec3)
+            let cube_pos: Vec3 = heidic_get_cube_position(cube_index);
+            let cube_size: f32 = heidic_get_cube_size(cube_index);
+            
+            // Cast ray from crosshair (screen center) to check if it hits this cube
+            let hit: i32 = heidic_raycast_cube_hit_center(window, cube_pos.x, cube_pos.y, cube_pos.z, cube_size, cube_size, cube_size);
+            
+            if hit == 1 {
+                // Get hit point to calculate distance
+                let hit_point: Vec3 = heidic_raycast_cube_hit_point_center(window, cube_pos.x, cube_pos.y, cube_pos.z, cube_size, cube_size, cube_size);
+                
+                // Calculate distance from camera to hit point
+                let dx: f32 = hit_point.x - camera_pos.x;
+                let dy: f32 = hit_point.y - camera_pos.y;
+                let dz: f32 = hit_point.z - camera_pos.z;
+                let dist: f32 = heidic_sqrt(dx * dx + dy * dy + dz * dz);
+                
+                // Track closest hit
+                if dist < closest_hit_distance {
+                    closest_hit_distance = dist;
+                    new_selected_cube = cube_index;
+                }
+            }
+            
+            cube_index = cube_index + 1;
+        }
+        
+        // Update selection: if a cube is picked up, keep it selected even if raycast doesn't hit
+        if picked_up_cube_index >= 0 {
+            // Keep the picked-up cube selected (don't let raycast deselect it)
+            selected_cube_index = picked_up_cube_index;
+        } else {
+            // Normal selection: use raycast result
+            selected_cube_index = new_selected_cube;
+        }
+        
+        // Debug: Print selection status when it changes (BEFORE visual feedback update)
+        if selected_cube_index != last_selected_cube && frame_count < 300 {
+            if selected_cube_index >= 0 {
+                print("[PICKUP] Cube selected: ");
+                print(selected_cube_index);
+                print("\n");
+            } else {
+                if last_selected_cube >= 0 {
+                    print("[PICKUP] Cube deselected\n");
+                }
+            }
+        }
+        
+        // Visual feedback: Change color of selected cube (bright white) and restore previous
+        if selected_cube_index != last_selected_cube {
+            // Restore previous cube's color
+            if last_selected_cube >= 0 {
+                heidic_restore_cube_color(last_selected_cube);
+            }
+            // Highlight new selected cube (bright white)
+            if selected_cube_index >= 0 {
+                heidic_set_cube_color(selected_cube_index, 1.0, 1.0, 1.0);  // Bright white when selected
+            }
+            last_selected_cube = selected_cube_index;
+        }
+        
+        // Handle spacebar for pickup/drop (AFTER raycast, so we know what's selected)
+        let spacebar_pressed: i32 = glfwGetKey(window, 32);  // GLFW_KEY_SPACE = 32
+        
+        // Debug: Print spacebar state when picking up/dropping (first few frames only)
+        if frame_count < 300 && picked_up_cube_index >= 0 {
+            print("[PICKUP] Spacebar state: ");
+            print(spacebar_pressed);
+            print(", picked_up_cube: ");
+            print(picked_up_cube_index);
+            print(", selected_cube: ");
+            print(selected_cube_index);
+            print("\n");
+        }
+        
+        if spacebar_pressed == 1 {
+            // Spacebar is held
+            if selected_cube_index >= 0 && picked_up_cube_index < 0 {
+                // Just started picking up - calculate distance from camera to cube along forward direction
+                let cube_pos: Vec3 = heidic_get_cube_position(selected_cube_index);
+                
+                // Calculate forward direction from camera yaw and pitch
+                let yaw_rad: f32 = camera_yaw * 0.0174532925;  // Convert to radians
+                let pitch_rad: f32 = camera_pitch * 0.0174532925;
+                let forward: Vec3 = Vec3(
+                    heidic_sin(yaw_rad) * heidic_cos(pitch_rad),
+                    heidic_sin(pitch_rad),
+                    -heidic_cos(yaw_rad) * heidic_cos(pitch_rad)
+                );
+                
+                // Calculate vector from camera to cube
+                let to_cube: Vec3 = Vec3(
+                    cube_pos.x - camera_pos.x,
+                    cube_pos.y - camera_pos.y,
+                    cube_pos.z - camera_pos.z
+                );
+                
+                // Calculate distance along forward direction (project to_cube onto forward)
+                // Distance = dot(to_cube, forward) / |forward|, but forward is normalized so |forward| = 1
+                pickup_distance = to_cube.x * forward.x + to_cube.y * forward.y + to_cube.z * forward.z;
+                
+                // Clamp distance to reasonable range (at least 1 unit in front)
+                if pickup_distance < 1.0 {
+                    pickup_distance = 1.0;
+                }
+                
+                picked_up_cube_index = selected_cube_index;
+                
+                // Debug output
+                if frame_count < 300 {
+                    print("[PICKUP] Picking up cube: ");
+                    print(selected_cube_index);
+                    print(", distance=");
+                    print(pickup_distance);
+                    print("\n");
+                }
+            }
+            
+            if picked_up_cube_index >= 0 {
+                // Keep the picked-up cube selected (important: maintain selection even if raycast misses)
+                selected_cube_index = picked_up_cube_index;
+                
+                // Calculate forward direction from camera yaw and pitch
+                let yaw_rad: f32 = camera_yaw * 0.0174532925;  // Convert to radians
+                let pitch_rad: f32 = camera_pitch * 0.0174532925;
+                let forward: Vec3 = Vec3(
+                    heidic_sin(yaw_rad) * heidic_cos(pitch_rad),
+                    heidic_sin(pitch_rad),
+                    -heidic_cos(yaw_rad) * heidic_cos(pitch_rad)
+                );
+                
+                // Update cube position to stay at fixed distance along forward direction (follows crosshair)
+                let new_cube_x: f32 = camera_pos.x + forward.x * pickup_distance;
+                let new_cube_y: f32 = camera_pos.y + forward.y * pickup_distance;
+                let new_cube_z: f32 = camera_pos.z + forward.z * pickup_distance;
+                
+                // Update cube position in C++
+                heidic_set_cube_position(picked_up_cube_index, new_cube_x, new_cube_y, new_cube_z);
+            }
+        } else {
+            // Spacebar released - drop cube
+            if picked_up_cube_index >= 0 {
+                let dropped_cube_size: f32 = heidic_get_cube_size(picked_up_cube_index);
+                let dropped_cube_pos: Vec3 = heidic_get_cube_position(picked_up_cube_index);
+                
+                // If dropping a small cube, check if there's a big cube below it
+                if dropped_cube_size < 1.0 {
+                    // Cast ray downward to check for big cube
+                    // Cast from slightly above current position to avoid self-intersection
+                    let ray_start_y: f32 = dropped_cube_pos.y + 0.1;
+                    let big_cube_below: i32 = heidic_raycast_downward_big_cube(dropped_cube_pos.x, ray_start_y, dropped_cube_pos.z);
+                    
+                    if big_cube_below >= 0 {
+                        // Snap small cube to center of big cube's top face IMMEDIATELY
+                        let big_cube_pos: Vec3 = heidic_get_cube_position(big_cube_below);
+                        let big_cube_size: f32 = heidic_get_cube_size(big_cube_below);
+                        
+                        // Big cube top is at: big_cube_pos.y + (big_cube_size / 2.0)
+                        // Small cube center should be at: big_cube_top + (small_cube_size / 2.0)
+                        let big_cube_top: f32 = big_cube_pos.y + (big_cube_size / 2.0);
+                        let small_cube_center_y: f32 = big_cube_top + (dropped_cube_size / 2.0);
+                        
+                        // Snap to center of big cube (X and Z match big cube center)
+                        heidic_set_cube_position(picked_up_cube_index, big_cube_pos.x, small_cube_center_y, big_cube_pos.z);
+                        
+                        if frame_count < 300 {
+                            print("[PICKUP] Snapped small cube to big cube ");
+                            print(big_cube_below);
+                            print("\n");
+                        }
+                    } else {
+                        // No big cube below, will fall to floor via gravity
+                        if frame_count < 300 {
+                            print("[PICKUP] Dropped small cube, no big cube below - will fall to floor\n");
+                        }
+                    }
+                } else {
+                    // Big cube dropped, just let it fall normally
+                    if frame_count < 300 {
+                        print("[PICKUP] Dropped big cube: ");
+                        print(picked_up_cube_index);
+                        print("\n");
+                    }
+                }
+                
+                picked_up_cube_index = -1;
+                pickup_distance = 0.0;
+            }
+        }
+        
+        // Debug: Print if spacebar pressed but no cube selected
+        if spacebar_pressed == 1 && selected_cube_index < 0 && frame_count < 300 {
+            print("[PICKUP] Spacebar pressed but no cube selected\n");
+        }
+        
+        // ====================================================================
+        // GRAVITY SYSTEM: Make dropped cubes fall to the floor
+        // ====================================================================
+        // Apply gravity to all cubes that are not picked up
+        // OPTIMIZATION: Only check cubes that are above the floor (no raycast needed for cubes on ground)
+        let gravity_cube_index: i32 = 0;
+        while gravity_cube_index < num_cubes {
+            // Skip if this cube is currently picked up
+            if gravity_cube_index != picked_up_cube_index {
+                let cube_pos: Vec3 = heidic_get_cube_position(gravity_cube_index);
+                let cube_size: f32 = heidic_get_cube_size(gravity_cube_index);
+                let half_size: f32 = cube_size / 2.0;
+                
+                // Check if this is a small cube that might be on top of a big cube
+                let is_small_cube: i32 = 0;
+                if cube_size < 1.0 {
+                    is_small_cube = 1;
+                }
+                
+                // For small cubes, check if they're on top of a big cube
+                let on_big_cube: i32 = 0;
+                if is_small_cube == 1 {
+                    // Cast ray downward to see if there's a big cube below
+                    let big_cube_below: i32 = heidic_raycast_downward_big_cube(cube_pos.x, cube_pos.y, cube_pos.z);
+                    if big_cube_below >= 0 {
+                        let big_cube_pos: Vec3 = heidic_get_cube_position(big_cube_below);
+                        let big_cube_size: f32 = heidic_get_cube_size(big_cube_below);
+                        let big_cube_top: f32 = big_cube_pos.y + (big_cube_size / 2.0);
+                        let expected_y: f32 = big_cube_top + half_size;
+                        
+                        // Check if cube is already correctly positioned on big cube (within small tolerance)
+                        let y_diff: f32 = cube_pos.y - expected_y;
+                        if y_diff < 0.01 && y_diff > -0.01 && cube_pos.x == big_cube_pos.x && cube_pos.z == big_cube_pos.z {
+                            on_big_cube = 1;  // Already on big cube, don't apply gravity
+                        }
+                    }
+                }
+                
+                // Only apply gravity if cube is above the floor and not on a big cube
+                if on_big_cube == 0 {
+                    // Cube bottom is at y = cube_pos.y - half_size
+                    // Floor top is at y = 0.0
+                    // So cube should rest at y = half_size (so bottom is at y = 0.0)
+                    let target_y: f32 = half_size;
+                    let cube_bottom: f32 = cube_pos.y - half_size;
+                    
+                    // Only apply gravity if cube is above the floor
+                    if cube_bottom > 0.0 {
+                        // Simple gravity: move down by a fixed amount per frame
+                        let gravity_speed: f32 = 0.1;  // Units per frame
+                        let new_y: f32 = cube_pos.y - gravity_speed;
+                        
+                        // Clamp to floor (don't go below target_y)
+                        if new_y < target_y {
+                            new_y = target_y;
+                        }
+                        
+                        // Update cube position
+                        heidic_set_cube_position(gravity_cube_index, cube_pos.x, new_y, cube_pos.z);
+                    }
+                }
+            }
+            gravity_cube_index = gravity_cube_index + 1;
+        }
+        
+        // Debug: Draw ray visualization line (yellow line from camera along ray direction)
+        let ray_origin: Vec3 = heidic_get_center_ray_origin(window);
+        let ray_dir: Vec3 = heidic_get_center_ray_dir(window);
+        let ray_length: f32 = 50.0;  // Draw 50 units long
+        let ray_end: Vec3 = Vec3(
+            ray_origin.x + ray_dir.x * ray_length,
+            ray_origin.y + ray_dir.y * ray_length,
+            ray_origin.z + ray_dir.z * ray_length
+        );
+        // Draw yellow line (1.0, 1.0, 0.0) to visualize raycast direction
+        heidic_draw_line(ray_origin.x, ray_origin.y, ray_origin.z, ray_end.x, ray_end.y, ray_end.z, 1.0, 1.0, 0.0);
+        
+        // Debug: Print ray info occasionally
+        if frame_count % 60 == 0 && frame_count < 300 {
+            print("[RAYCAST] Origin: (");
+            print(ray_origin.x);
+            print(", ");
+            print(ray_origin.y);
+            print(", ");
+            print(ray_origin.z);
+            print(") Dir: (");
+            print(ray_dir.x);
+            print(", ");
+            print(ray_dir.y);
+            print(", ");
+            print(ray_dir.z);
+            print(")\n");
+        }
+        
+        frame_count = frame_count + 1;
+        heidic_sleep_ms(16); // ~60 FPS cap
+    }
+
+    print("Cleaning up...\n");
+    // Cleanup Neuroshell
+    neuroshell_shutdown();
+    heidic_cleanup_renderer_fps();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Program exited successfully.\n");
+    print("Done!\n");
+}

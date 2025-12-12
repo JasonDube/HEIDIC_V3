@@ -49,6 +49,7 @@ struct UniformBufferObject {
     glm::mat4 model;
     glm::mat4 view;
     glm::mat4 proj;
+    // Note: FPS renderer uses push constants for model matrix instead of UBO
 };
 
 // Global Vulkan state (accessible to TextureResource and other resource classes)
@@ -122,7 +123,7 @@ extern "C" void heidic_set_rotation_speed(float speed) {
 // Helper to read binary file (for shaders)
 static std::vector<char> readFile(const std::string& filename) {
     std::vector<std::string> paths = {
-        filename,
+        filename,  // Current directory (project directory)
         "../" + filename,
         "../../" + filename,
         "../../../" + filename,
@@ -133,6 +134,8 @@ static std::vector<char> readFile(const std::string& filename) {
         "examples/spinning_cube/" + filename,
         "../examples/spinning_cube/" + filename,
         "../../examples/spinning_cube/" + filename,
+        "../../../examples/spinning_cube/" + filename,
+        "../../../../examples/spinning_cube/" + filename,
         "examples/spinning_triangle/" + filename,
         "../examples/spinning_triangle/" + filename,
         "../../examples/spinning_triangle/" + filename,
@@ -322,16 +325,95 @@ extern "C" int heidic_init_renderer(GLFWwindow* window) {
     uint32_t glfwExtensionCount = 0;
     const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
     
+    // Enable validation layers
+    const std::vector<const char*> validationLayers = {
+        "VK_LAYER_KHRONOS_validation"
+    };
+    
+    // Check if validation layers are available
+    uint32_t layerCount;
+    vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+    std::vector<VkLayerProperties> availableLayers(layerCount);
+    vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+    
+    bool validationLayersAvailable = true;
+    for (const char* layerName : validationLayers) {
+        bool layerFound = false;
+        for (const auto& layerProperties : availableLayers) {
+            if (std::strcmp(layerName, layerProperties.layerName) == 0) {
+                layerFound = true;
+                break;
+            }
+        }
+        if (!layerFound) {
+            validationLayersAvailable = false;
+            std::cerr << "[EDEN] WARNING: Validation layer " << layerName << " not available!" << std::endl;
+            break;
+        }
+    }
+    
     VkInstanceCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     createInfo.pApplicationInfo = &appInfo;
     createInfo.enabledExtensionCount = glfwExtensionCount;
     createInfo.ppEnabledExtensionNames = glfwExtensions;
-    createInfo.enabledLayerCount = 0;
+    
+    if (validationLayersAvailable) {
+        createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
+        createInfo.ppEnabledLayerNames = validationLayers.data();
+        std::cout << "[EDEN] Validation layers enabled" << std::endl;
+    } else {
+        createInfo.enabledLayerCount = 0;
+        std::cout << "[EDEN] Validation layers not available, continuing without them" << std::endl;
+    }
+    
+    // Add debug messenger extension if validation layers are enabled
+    std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
+    if (validationLayersAvailable) {
+        extensions.push_back("VK_EXT_debug_utils");
+    }
+    
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+    createInfo.ppEnabledExtensionNames = extensions.data();
     
     if (vkCreateInstance(&createInfo, nullptr, &g_instance) != VK_SUCCESS) {
         std::cerr << "[EDEN] ERROR: Failed to create Vulkan instance!" << std::endl;
         return 0;
+    }
+    
+    // Create debug messenger if validation layers are enabled
+    if (validationLayersAvailable) {
+        VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = {};
+        debugCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        debugCreateInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | 
+                                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | 
+                                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        debugCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | 
+                                     VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | 
+                                     VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        debugCreateInfo.pfnUserCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+                                             VkDebugUtilsMessageTypeFlagsEXT messageType,
+                                             const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+                                             void* pUserData) -> VkBool32 {
+            if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
+                std::cerr << "[VULKAN VALIDATION] " << pCallbackData->pMessage << std::endl;
+            }
+            return VK_FALSE;
+        };
+        
+        // Load vkCreateDebugUtilsMessengerEXT function
+        typedef VkResult (VKAPI_PTR *PFN_vkCreateDebugUtilsMessengerEXT)(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pMessenger);
+        auto vkCreateDebugUtilsMessengerEXT = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_instance, "vkCreateDebugUtilsMessengerEXT");
+        if (vkCreateDebugUtilsMessengerEXT != nullptr) {
+            VkDebugUtilsMessengerEXT debugMessenger;
+            if (vkCreateDebugUtilsMessengerEXT(g_instance, &debugCreateInfo, nullptr, &debugMessenger) == VK_SUCCESS) {
+                std::cout << "[EDEN] Debug messenger created successfully" << std::endl;
+            } else {
+                std::cerr << "[EDEN] WARNING: Failed to create debug messenger" << std::endl;
+            }
+        } else {
+            std::cerr << "[EDEN] WARNING: vkCreateDebugUtilsMessengerEXT not available" << std::endl;
+        }
     }
     
     // 2. Create surface
@@ -1661,13 +1743,14 @@ static const std::vector<Vertex> cubeVertices = {
 };
 
 // Cube indices (12 triangles = 6 faces * 2 triangles per face)
+// Corrected winding order for counter-clockwise front face
 static const std::vector<uint16_t> cubeIndices = {
-    0, 1, 2,  2, 3, 0,  // Front face
-    4, 6, 5,  6, 4, 7,  // Back face
-    3, 2, 6,  6, 7, 3,  // Top face
-    0, 4, 5,  5, 1, 0,  // Bottom face
-    1, 5, 6,  6, 2, 1,  // Right face
-    0, 3, 7,  7, 4, 0,  // Left face
+    0, 1, 2,  2, 3, 0,  // Front face (counter-clockwise)
+    4, 5, 6,  4, 6, 7,  // Back face (counter-clockwise when viewed from outside)
+    3, 2, 6,  3, 6, 7,  // Top face (counter-clockwise)
+    0, 4, 5,  0, 5, 1,  // Bottom face (counter-clockwise)
+    1, 5, 6,  1, 6, 2,  // Right face (counter-clockwise)
+    0, 3, 7,  0, 7, 4,  // Left face (counter-clockwise)
 };
 
 // Initialize cube renderer
@@ -2031,6 +2114,1053 @@ extern "C" void heidic_render_frame_cube(GLFWwindow* window) {
     presentInfo.pResults = nullptr;
     
     vkQueuePresentKHR(g_graphicsQueue, &presentInfo);
+}
+
+// ============================================================================
+// FPS CAMERA RENDERER (for FPS camera test with floor cube)
+// ============================================================================
+
+// FPS-specific state
+static VkPipeline g_fpsPipeline = VK_NULL_HANDLE;
+static VkShaderModule g_fpsVertShaderModule = VK_NULL_HANDLE;
+static VkShaderModule g_fpsFragShaderModule = VK_NULL_HANDLE;
+static bool g_fpsInitialized = false;
+static VkBuffer g_fpsCubeVertexBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_fpsCubeVertexBufferMemory = VK_NULL_HANDLE;
+static VkBuffer g_fpsCubeIndexBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_fpsCubeIndexBufferMemory = VK_NULL_HANDLE;
+static uint32_t g_fpsCubeIndexCount = 0;
+
+// Colored reference cubes (1x1x1 cubes for spatial reference)
+static VkBuffer g_coloredCubeVertexBuffers[15] = {VK_NULL_HANDLE};  // Increased to 15 (9 big + 5 small + 1 extra)
+static VkDeviceMemory g_coloredCubeVertexBufferMemory[15] = {VK_NULL_HANDLE};
+static int g_numColoredCubes = 0;
+// Store cube sizes (1.0 for big cubes, 0.5 for small cubes)
+static float g_coloredCubeSizes[15] = {0.0f};
+
+// FPS Camera matrices for raycasting (updated each frame in heidic_render_fps)
+static glm::mat4 g_fpsCurrentView = glm::mat4(1.0f);
+static glm::mat4 g_fpsCurrentProj = glm::mat4(1.0f);
+static glm::vec3 g_fpsCurrentCamPos = glm::vec3(0.0f);
+
+// Mutable cube positions (for pickup system)
+struct ColoredCubePos {
+    float x, y, z;
+};
+static std::vector<ColoredCubePos> g_coloredCubePositions;
+
+// Store original cube colors (for restoring after selection)
+struct ColoredCubeColor {
+    float r, g, b;
+};
+static std::vector<ColoredCubeColor> g_coloredCubeOriginalColors;
+
+// Floor cube vertices - EXACT COPY of spinning cube vertices, just with gray colors
+// Using -1.0 to 1.0 range like spinning cube (will scale via model matrix)
+static const std::vector<Vertex> floorCubeVertices = {
+    {{-1.0f, -1.0f,  1.0f}, {0.5f, 0.5f, 0.5f}},  // 0: Front bottom-left
+    {{ 1.0f, -1.0f,  1.0f}, {0.5f, 0.5f, 0.5f}},  // 1: Front bottom-right
+    {{ 1.0f,  1.0f,  1.0f}, {0.6f, 0.6f, 0.6f}},  // 2: Front top-right
+    {{-1.0f,  1.0f,  1.0f}, {0.6f, 0.6f, 0.6f}},  // 3: Front top-left
+    {{-1.0f, -1.0f, -1.0f}, {0.5f, 0.5f, 0.5f}},  // 4: Back bottom-left
+    {{ 1.0f, -1.0f, -1.0f}, {0.5f, 0.5f, 0.5f}},  // 5: Back bottom-right
+    {{ 1.0f,  1.0f, -1.0f}, {0.6f, 0.6f, 0.6f}},  // 6: Back top-right
+    {{-1.0f,  1.0f, -1.0f}, {0.6f, 0.6f, 0.6f}},  // 7: Back top-left
+};
+
+// Floor cube indices - matching spinning cube exactly
+// Winding order: counter-clockwise when viewed from outside
+static const std::vector<uint16_t> floorCubeIndices = {
+    0, 1, 2,  2, 3, 0,  // Front face (z=+0.5, facing +Z)
+    4, 5, 6,  4, 6, 7,  // Back face (z=-0.5, facing -Z)
+    3, 2, 6,  3, 6, 7,  // Top face (y=+0.5, facing +Y)
+    0, 4, 5,  0, 5, 1,  // Bottom face (y=-0.5, facing -Y)
+    1, 5, 6,  1, 6, 2,  // Right face (x=+0.5, facing +X)
+    0, 3, 7,  0, 7, 4,  // Left face (x=-0.5, facing -X)
+};
+
+// Initialize FPS camera renderer
+extern "C" int heidic_init_renderer_fps(GLFWwindow* window) {
+    // Initialize base renderer (this creates descriptor sets and uniform buffers)
+    if (heidic_init_renderer(window) == 0) {
+        return 0;
+    }
+    
+    // DIAGNOSTIC: Verify descriptor sets were created
+    if (g_descriptorSets.empty()) {
+        std::cerr << "[FPS] ERROR: Descriptor sets are empty after base renderer init!" << std::endl;
+        return 0;
+    }
+    if (g_uniformBuffers.empty()) {
+        std::cerr << "[FPS] ERROR: Uniform buffers are empty after base renderer init!" << std::endl;
+        return 0;
+    }
+    std::cout << "[FPS] Descriptor sets created: " << g_descriptorSets.size() << ", Uniform buffers: " << g_uniformBuffers.size() << std::endl;
+    
+    // Initialize Neuroshell for crosshair rendering
+    #ifdef USE_NEUROSHELL
+    extern int neuroshell_init(GLFWwindow* window);
+    extern bool neuroshell_is_enabled();
+    if (!neuroshell_is_enabled()) {
+        int neuroshell_result = neuroshell_init(window);
+        if (neuroshell_result == 0) {
+            std::cerr << "[FPS] WARNING: Failed to initialize Neuroshell - crosshair will not be visible" << std::endl;
+        } else {
+            std::cout << "[FPS] Neuroshell initialized for crosshair rendering" << std::endl;
+        }
+    }
+    #else
+    std::cerr << "[FPS] WARNING: Neuroshell not compiled in (USE_NEUROSHELL not defined) - crosshair will not be visible" << std::endl;
+    #endif
+    
+    // Destroy triangle pipeline since we'll use our own
+    if (g_pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_pipeline, nullptr);
+        g_pipeline = VK_NULL_HANDLE;
+    }
+    
+    // Create FPS-specific vertex/index buffers for floor cube (separate from regular cube buffers)
+    if (g_fpsCubeVertexBuffer == VK_NULL_HANDLE) {
+        // Create vertex buffer for floor cube
+        VkDeviceSize vertexBufferSize = sizeof(floorCubeVertices[0]) * floorCubeVertices.size();
+        createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     g_fpsCubeVertexBuffer, g_fpsCubeVertexBufferMemory);
+        
+        void* data;
+        vkMapMemory(g_device, g_fpsCubeVertexBufferMemory, 0, vertexBufferSize, 0, &data);
+        memcpy(data, floorCubeVertices.data(), (size_t)vertexBufferSize);
+        vkUnmapMemory(g_device, g_fpsCubeVertexBufferMemory);
+        
+        // Create index buffer
+        VkDeviceSize indexBufferSize = sizeof(floorCubeIndices[0]) * floorCubeIndices.size();
+        g_fpsCubeIndexCount = static_cast<uint32_t>(floorCubeIndices.size());
+        createBuffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     g_fpsCubeIndexBuffer, g_fpsCubeIndexBufferMemory);
+        
+        vkMapMemory(g_device, g_fpsCubeIndexBufferMemory, 0, indexBufferSize, 0, &data);
+        memcpy(data, floorCubeIndices.data(), (size_t)indexBufferSize);
+        vkUnmapMemory(g_device, g_fpsCubeIndexBufferMemory);
+        
+        std::cout << "[FPS] Created floor cube buffers: " << floorCubeVertices.size() << " vertices, " 
+                  << floorCubeIndices.size() << " indices" << std::endl;
+    }
+    
+    // Create colored reference cubes (1x1x1 cubes with different colors)
+    struct ColoredCubeData {
+        float x, y, z;
+        float r, g, b;
+    };
+    
+    std::vector<ColoredCubeData> referenceCubes = {
+        {0.0f, 0.5f, 0.0f, 1.0f, 0.0f, 0.0f},   // Red at origin (big)
+        {5.0f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f},   // Green at +X (big)
+        {-5.0f, 0.5f, 0.0f, 0.0f, 0.0f, 1.0f},  // Blue at -X (big)
+        {0.0f, 0.5f, 5.0f, 1.0f, 1.0f, 0.0f},   // Yellow at +Z (big)
+        {0.0f, 0.5f, -5.0f, 1.0f, 0.0f, 1.0f},  // Magenta at -Z (big)
+        {5.0f, 0.5f, 5.0f, 0.0f, 1.0f, 1.0f},   // Cyan at +X+Z (big)
+        {-5.0f, 0.5f, -5.0f, 1.0f, 0.5f, 0.0f}, // Orange at -X-Z (big)
+        {10.0f, 0.5f, 0.0f, 0.5f, 0.5f, 1.0f},  // Light blue at +10X (big)
+        {-10.0f, 0.5f, 0.0f, 1.0f, 0.5f, 0.5f}, // Pink at -10X (big)
+        // Small cubes (0.5x0.5x0.5) - positioned on floor at different locations
+        {2.0f, 0.25f, 2.0f, 0.8f, 0.2f, 0.2f},  // Small red on floor
+        {-2.0f, 0.25f, 2.0f, 0.2f, 0.8f, 0.2f},  // Small green on floor
+        {2.0f, 0.25f, -2.0f, 0.2f, 0.2f, 0.8f}, // Small blue on floor
+        {-2.0f, 0.25f, -2.0f, 0.8f, 0.8f, 0.2f},  // Small yellow on floor
+        {0.0f, 0.25f, 0.0f, 0.8f, 0.2f, 0.8f}, // Small magenta on floor (at origin)
+    };
+    
+    g_numColoredCubes = static_cast<int>(referenceCubes.size());
+    
+    // Initialize global cube positions array and store original colors
+    g_coloredCubePositions.clear();
+    g_coloredCubeOriginalColors.clear();
+    for (int i = 0; i < g_numColoredCubes; i++) {
+        const auto& cube = referenceCubes[i];
+        g_coloredCubePositions.push_back({cube.x, cube.y, cube.z});
+        g_coloredCubeOriginalColors.push_back({cube.r, cube.g, cube.b});
+        // First 9 cubes are big (1.0), rest are small (0.5)
+        g_coloredCubeSizes[i] = (i < 9) ? 1.0f : 0.5f;
+    }
+    
+    // Create vertex buffers for each colored cube
+    // Note: All vertices are created at size 1.0 (from -0.5 to 0.5), scaling is done in model matrix
+    for (int i = 0; i < g_numColoredCubes && i < 15; i++) {
+        // Create cube vertices with the specified color (always size 1.0, scaled in model matrix)
+        std::vector<Vertex> coloredCubeVertices = {
+            {{-0.5f, -0.5f,  0.5f}, {referenceCubes[i].r, referenceCubes[i].g, referenceCubes[i].b}},
+            {{ 0.5f, -0.5f,  0.5f}, {referenceCubes[i].r, referenceCubes[i].g, referenceCubes[i].b}},
+            {{ 0.5f,  0.5f,  0.5f}, {referenceCubes[i].r, referenceCubes[i].g, referenceCubes[i].b}},
+            {{-0.5f,  0.5f,  0.5f}, {referenceCubes[i].r, referenceCubes[i].g, referenceCubes[i].b}},
+            {{-0.5f, -0.5f, -0.5f}, {referenceCubes[i].r, referenceCubes[i].g, referenceCubes[i].b}},
+            {{ 0.5f, -0.5f, -0.5f}, {referenceCubes[i].r, referenceCubes[i].g, referenceCubes[i].b}},
+            {{ 0.5f,  0.5f, -0.5f}, {referenceCubes[i].r, referenceCubes[i].g, referenceCubes[i].b}},
+            {{-0.5f,  0.5f, -0.5f}, {referenceCubes[i].r, referenceCubes[i].g, referenceCubes[i].b}},
+        };
+        
+        VkDeviceSize vertexBufferSize = sizeof(coloredCubeVertices[0]) * coloredCubeVertices.size();
+        createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     g_coloredCubeVertexBuffers[i], g_coloredCubeVertexBufferMemory[i]);
+        
+        void* data;
+        vkMapMemory(g_device, g_coloredCubeVertexBufferMemory[i], 0, vertexBufferSize, 0, &data);
+        memcpy(data, coloredCubeVertices.data(), (size_t)vertexBufferSize);
+        vkUnmapMemory(g_device, g_coloredCubeVertexBufferMemory[i]);
+    }
+    
+    std::cout << "[FPS] Created " << g_numColoredCubes << " colored reference cubes" << std::endl;
+    
+    // Load shaders - FORCE use of cube shaders (same as working spinning cube)
+    std::vector<char> vertShaderCode, fragShaderCode;
+    try {
+        // Use cube shaders first (these are known to work)
+        vertShaderCode = readFile("vert_cube.spv");
+        fragShaderCode = readFile("frag_cube.spv");
+        std::cout << "[FPS] Using cube shaders (vert_cube.spv, frag_cube.spv) - same as working spinning cube" << std::endl;
+    } catch (const std::exception&) {
+        // Fall back to fps-specific shaders
+        try {
+            vertShaderCode = readFile("vert_fps.spv");
+            fragShaderCode = readFile("frag_fps.spv");
+            std::cout << "[FPS] Using FPS-specific shaders (vert_fps.spv, frag_fps.spv)" << std::endl;
+        } catch (const std::exception&) {
+            // Last resort: default 3d shaders (but these are broken - missing vertex inputs)
+            try {
+                vertShaderCode = readFile("vert_3d.spv");
+                fragShaderCode = readFile("frag_3d.spv");
+                std::cerr << "[FPS] WARNING: Using default 3D shaders (vert_3d.spv, frag_3d.spv) - these may be broken!" << std::endl;
+                std::cerr << "[FPS] Validation layer reported these shaders don't consume vertex attributes!" << std::endl;
+            } catch (const std::exception& e) {
+                std::cerr << "[FPS] ERROR: Could not find shader files!" << std::endl;
+                std::cerr << "[FPS] Tried: vert_cube.spv/frag_cube.spv, vert_fps.spv/frag_fps.spv, and vert_3d.spv/frag_3d.spv" << std::endl;
+                std::cerr << "[FPS] Error: " << e.what() << std::endl;
+                return 0;
+            }
+        }
+    }
+    
+    VkShaderModuleCreateInfo vertCreateInfo = {};
+    vertCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vertCreateInfo.codeSize = vertShaderCode.size();
+    vertCreateInfo.pCode = reinterpret_cast<const uint32_t*>(vertShaderCode.data());
+    
+    if (vkCreateShaderModule(g_device, &vertCreateInfo, nullptr, &g_fpsVertShaderModule) != VK_SUCCESS) {
+        std::cerr << "[FPS] ERROR: Failed to create vertex shader module!" << std::endl;
+        return 0;
+    }
+    
+    VkShaderModuleCreateInfo fragCreateInfo = {};
+    fragCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    fragCreateInfo.codeSize = fragShaderCode.size();
+    fragCreateInfo.pCode = reinterpret_cast<const uint32_t*>(fragShaderCode.data());
+    
+    if (vkCreateShaderModule(g_device, &fragCreateInfo, nullptr, &g_fpsFragShaderModule) != VK_SUCCESS) {
+        std::cerr << "[FPS] ERROR: Failed to create fragment shader module!" << std::endl;
+        vkDestroyShaderModule(g_device, g_fpsVertShaderModule, nullptr);
+        return 0;
+    }
+    
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = g_fpsVertShaderModule;
+    vertShaderStageInfo.pName = "main";
+    
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = g_fpsFragShaderModule;
+    fragShaderStageInfo.pName = "main";
+    
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+    
+    // Vertex input description (same as cube)
+    VkVertexInputBindingDescription bindingDescription = {};
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(Vertex);
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    
+    VkVertexInputAttributeDescription attributeDescriptions[2] = {};
+    attributeDescriptions[0].binding = 0;
+    attributeDescriptions[0].location = 0;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[0].offset = offsetof(Vertex, pos);
+    
+    attributeDescriptions[1].binding = 0;
+    attributeDescriptions[1].location = 1;
+    attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[1].offset = offsetof(Vertex, color);
+    
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = 2;
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
+    
+    // Input assembly
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+    
+    // Viewport and scissor
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)g_swapchainExtent.width;
+    viewport.height = (float)g_swapchainExtent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    
+    VkRect2D scissor = {};
+    scissor.offset = {0, 0};
+    scissor.extent = g_swapchainExtent;
+    
+    VkPipelineViewportStateCreateInfo viewportState = {};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+    
+    // Rasterization
+    VkPipelineRasterizationStateCreateInfo rasterizer = {};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;  // Disable culling so we can see all faces from all angles
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+    
+    // Multisampling
+    VkPipelineMultisampleStateCreateInfo multisampling = {};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    
+    // Depth stencil
+    VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+    
+    // Color blending
+    VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+    
+    VkPipelineColorBlendStateCreateInfo colorBlending = {};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+    
+    // Pipeline layout (reuse existing)
+    VkGraphicsPipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = g_pipelineLayout;
+    pipelineInfo.renderPass = g_renderPass;
+    pipelineInfo.subpass = 0;
+    pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+    
+    if (vkCreateGraphicsPipelines(g_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_fpsPipeline) != VK_SUCCESS) {
+        std::cerr << "[FPS] ERROR: Failed to create FPS graphics pipeline!" << std::endl;
+        vkDestroyShaderModule(g_device, g_fpsFragShaderModule, nullptr);
+        vkDestroyShaderModule(g_device, g_fpsVertShaderModule, nullptr);
+        return 0;
+    }
+    
+    g_fpsInitialized = true;
+    std::cout << "[FPS] FPS camera renderer initialized successfully!" << std::endl;
+    return 1;
+}
+
+// Render FPS camera frame
+extern "C" void heidic_render_fps(GLFWwindow* window, float camera_pos_x, float camera_pos_y, float camera_pos_z, float camera_yaw, float camera_pitch) {
+    if (g_device == VK_NULL_HANDLE || g_swapchain == VK_NULL_HANDLE) {
+        return;
+    }
+    
+    // Use FPS pipeline if available, otherwise use cube pipeline
+    VkPipeline pipelineToUse = (g_fpsPipeline != VK_NULL_HANDLE) ? g_fpsPipeline : g_cubePipeline;
+    if (pipelineToUse == VK_NULL_HANDLE) {
+        std::cerr << "[FPS] ERROR: No pipeline available (neither FPS nor cube pipeline exists)!" << std::endl;
+        return;
+    }
+    
+    // Wait for previous frame
+    vkWaitForFences(g_device, 1, &g_inFlightFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(g_device, 1, &g_inFlightFence);
+    
+    // Acquire next image
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(g_device, g_swapchain, UINT64_MAX, g_imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+    
+    // Reset command buffer
+    vkResetCommandBuffer(g_commandBuffers[imageIndex], 0);
+    
+    // Begin command buffer
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    vkBeginCommandBuffer(g_commandBuffers[imageIndex], &beginInfo);
+    
+    // Begin render pass
+    VkRenderPassBeginInfo renderPassInfo = {};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = g_renderPass;
+    renderPassInfo.framebuffer = g_framebuffers[imageIndex];
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = g_swapchainExtent;
+    
+    std::array<VkClearValue, 2> clearValues = {};
+    clearValues[0].color = {{0.1f, 0.1f, 0.15f, 1.0f}};  // Dark blue-gray background
+    clearValues[1].depthStencil = {1.0f, 0};
+    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+    renderPassInfo.pClearValues = clearValues.data();
+    
+    vkCmdBeginRenderPass(g_commandBuffers[imageIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    
+    // Bind pipeline FIRST (use the selected pipeline)
+    vkCmdBindPipeline(g_commandBuffers[imageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineToUse);
+    
+    // Update uniform buffer - view and projection matrices (shared across all objects)
+    UniformBufferObject ubo = {};
+    ubo.model = glm::mat4(1.0f);  // Set to identity (not used, shader uses push constant instead, but needed for struct layout)
+    
+    // Model matrix for floor cube - scale the floor cube to be a large floor
+    // Floor cube vertices are -1.0 to 1.0 (2x2x2 cube), so scale to make it a large floor
+    // Scale X and Z much more than Y to keep thickness but make it wide
+    glm::mat4 floorModel = glm::mat4(1.0f);
+    floorModel = glm::translate(floorModel, glm::vec3(0.0f, -0.5f, 0.0f));  // Translate first
+    floorModel = glm::scale(floorModel, glm::vec3(25.0f, 0.5f, 25.0f));  // Then scale: 50x1x50 units (wide floor, thin height)
+    
+    // View matrix - calculate from camera position, yaw, and pitch
+    // Convert yaw and pitch from degrees to radians
+    float yaw_rad = camera_yaw * 3.14159f / 180.0f;
+    float pitch_rad = camera_pitch * 3.14159f / 180.0f;
+    
+    // Calculate forward vector from yaw and pitch (Y-up coordinate system)
+    // Yaw: rotation around Y axis (0 = looking down -Z, positive = rotating right)
+    // Pitch: rotation around X axis (0 = horizontal, positive = looking up)
+    // Standard mouse look: positive pitch = looking up
+    glm::vec3 forward(
+        sinf(yaw_rad) * cosf(pitch_rad),
+        sinf(pitch_rad),  // Positive pitch = looking up (positive Y)
+        -cosf(yaw_rad) * cosf(pitch_rad)
+    );
+    forward = glm::normalize(forward);
+    
+    // Calculate right vector (perpendicular to forward and world up)
+    glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
+    
+    // Calculate up vector (perpendicular to forward and right) - correct order for right-handed system
+    glm::vec3 up = glm::normalize(glm::cross(right, forward));
+    
+    // Camera position
+    Vec3 eye = {camera_pos_x, camera_pos_y, camera_pos_z};
+    
+    // Center is camera position + forward direction
+    Vec3 center = {
+        camera_pos_x + forward.x,
+        camera_pos_y + forward.y,
+        camera_pos_z + forward.z
+    };
+    Vec3 up_vec = {up.x, up.y, up.z};
+    
+    // Create view matrix using mat4_lookat - assign directly like spinning cube
+    ubo.view = mat4_lookat(eye, center, up_vec);
+    
+    // Projection matrix - use 70 degree FOV for FPS camera
+    float fov = 70.0f * 3.14159f / 180.0f;
+    float aspect = (float)g_swapchainExtent.width / (float)g_swapchainExtent.height;
+    float nearPlane = 0.1f;
+    float farPlane = 100.0f;
+    ubo.proj = mat4_perspective(fov, aspect, nearPlane, farPlane);
+    
+    // Vulkan clip space has inverted Y and half Z - modify directly like spinning cube
+    ubo.proj[1][1] *= -1.0f;
+    
+    // Store matrices globally for raycasting
+    g_fpsCurrentView = ubo.view;
+    g_fpsCurrentProj = ubo.proj;
+    g_fpsCurrentCamPos = glm::vec3(camera_pos_x, camera_pos_y, camera_pos_z);
+    
+    // No per-frame debug spam
+    
+    // Update uniform buffer for floor cube
+    void* data;
+    vkMapMemory(g_device, g_uniformBuffersMemory[imageIndex], 0, sizeof(ubo), 0, &data);
+    memcpy(data, &ubo, sizeof(ubo));
+    vkUnmapMemory(g_device, g_uniformBuffersMemory[imageIndex]);
+    
+    // DIAGNOSTIC: Verify descriptor sets are valid
+    if (g_descriptorSets.empty() || imageIndex >= g_descriptorSets.size() || g_descriptorSets[imageIndex] == VK_NULL_HANDLE) {
+        std::cerr << "[FPS] ERROR: Descriptor set is NULL! imageIndex=" << imageIndex << ", sets.size()=" << g_descriptorSets.size() << std::endl;
+        return;
+    }
+    if (g_uniformBuffers.empty() || imageIndex >= g_uniformBuffers.size() || g_uniformBuffers[imageIndex] == VK_NULL_HANDLE) {
+        std::cerr << "[FPS] ERROR: Uniform buffer is NULL! imageIndex=" << imageIndex << ", buffers.size()=" << g_uniformBuffers.size() << std::endl;
+        return;
+    }
+    
+    // Bind descriptor set (MUST be after pipeline is bound, before any draw calls)
+    vkCmdBindDescriptorSets(g_commandBuffers[imageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipelineLayout, 0, 1, &g_descriptorSets[imageIndex], 0, nullptr);
+    
+    // Push model matrix for floor cube as push constant
+    vkCmdPushConstants(g_commandBuffers[imageIndex], g_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &floorModel);
+    
+    // Bind vertex buffer (use FPS-specific buffers)
+    VkBuffer vertexBuffers[] = {g_fpsCubeVertexBuffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(g_commandBuffers[imageIndex], 0, 1, vertexBuffers, offsets);
+    
+    // Bind index buffer (use FPS-specific buffers)
+    vkCmdBindIndexBuffer(g_commandBuffers[imageIndex], g_fpsCubeIndexBuffer, 0, VK_INDEX_TYPE_UINT16);
+    
+    // Draw floor cube using indexed drawing
+    vkCmdDrawIndexed(g_commandBuffers[imageIndex], g_fpsCubeIndexCount, 1, 0, 0, 0);
+    
+    // Draw multiple colored 1x1x1 cubes on top of the floor for spatial reference
+    // Use global mutable cube positions array (for pickup system)
+    
+    // Render colored cubes if they were created
+    for (int i = 0; i < g_numColoredCubes && i < static_cast<int>(g_coloredCubePositions.size()); i++) {
+        if (g_coloredCubeVertexBuffers[i] == VK_NULL_HANDLE) {
+            continue;
+        }
+        
+        // Model matrix: cube at the specified position
+        // Note: Vertices are created at size 1.0, so we need to scale them to the actual cube size
+        float cubeSize = g_coloredCubeSizes[i];
+        glm::mat4 cubeModel = glm::mat4(1.0f);
+        cubeModel = glm::translate(cubeModel, glm::vec3(g_coloredCubePositions[i].x, g_coloredCubePositions[i].y, g_coloredCubePositions[i].z));
+        cubeModel = glm::scale(cubeModel, glm::vec3(cubeSize, cubeSize, cubeSize));  // Scale to actual cube size
+        
+        // Push model matrix as push constant (each draw gets its own matrix)
+        vkCmdPushConstants(g_commandBuffers[imageIndex], g_pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &cubeModel);
+        
+        // Bind the colored cube's vertex buffer
+        VkBuffer vertexBuffers[] = {g_coloredCubeVertexBuffers[i]};
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(g_commandBuffers[imageIndex], 0, 1, vertexBuffers, offsets);
+        
+        // Rebind index buffer (same indices work for all cubes - 36 indices for a cube)
+        vkCmdBindIndexBuffer(g_commandBuffers[imageIndex], g_fpsCubeIndexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        
+        // Draw the cube (36 indices for a cube: 6 faces * 2 triangles * 3 vertices)
+        vkCmdDrawIndexed(g_commandBuffers[imageIndex], 36, 1, 0, 0, 0);
+    }
+    
+    // Render Neuroshell UI (includes crosshair)
+    #ifdef USE_NEUROSHELL
+    extern void neuroshell_render(VkCommandBuffer);
+    extern bool neuroshell_is_enabled();
+    if (neuroshell_is_enabled()) {
+        neuroshell_render(g_commandBuffers[imageIndex]);
+    }
+    #endif
+    
+    vkCmdEndRenderPass(g_commandBuffers[imageIndex]);
+    
+    if (vkEndCommandBuffer(g_commandBuffers[imageIndex]) != VK_SUCCESS) {
+        std::cerr << "[FPS] ERROR: Failed to record command buffer!" << std::endl;
+        return;
+    }
+    
+    // Submit command buffer
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    
+    VkSemaphore waitSemaphores[] = {g_imageAvailableSemaphore};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &g_commandBuffers[imageIndex];
+    
+    VkSemaphore signalSemaphores[] = {g_renderFinishedSemaphore};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+    
+    if (vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, g_inFlightFence) != VK_SUCCESS) {
+        std::cerr << "[FPS] ERROR: Failed to submit draw command buffer!" << std::endl;
+        return;
+    }
+    
+    // Present
+    VkPresentInfoKHR presentInfo = {};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+    
+    VkSwapchainKHR swapChains[] = {g_swapchain};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &imageIndex;
+    presentInfo.pResults = nullptr;
+    
+    vkQueuePresentKHR(g_graphicsQueue, &presentInfo);
+}
+
+// Cleanup FPS renderer
+extern "C" void heidic_cleanup_renderer_fps() {
+    if (g_device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(g_device);
+        
+        // Cleanup FPS-specific buffers
+        if (g_fpsCubeIndexBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_device, g_fpsCubeIndexBuffer, nullptr);
+            g_fpsCubeIndexBuffer = VK_NULL_HANDLE;
+        }
+        if (g_fpsCubeIndexBufferMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_device, g_fpsCubeIndexBufferMemory, nullptr);
+            g_fpsCubeIndexBufferMemory = VK_NULL_HANDLE;
+        }
+        if (g_fpsCubeVertexBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_device, g_fpsCubeVertexBuffer, nullptr);
+            g_fpsCubeVertexBuffer = VK_NULL_HANDLE;
+        }
+        if (g_fpsCubeVertexBufferMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_device, g_fpsCubeVertexBufferMemory, nullptr);
+            g_fpsCubeVertexBufferMemory = VK_NULL_HANDLE;
+        }
+        
+        // Cleanup colored cube buffers
+        for (int i = 0; i < g_numColoredCubes && i < 10; i++) {
+            if (g_coloredCubeVertexBuffers[i] != VK_NULL_HANDLE) {
+                vkDestroyBuffer(g_device, g_coloredCubeVertexBuffers[i], nullptr);
+                g_coloredCubeVertexBuffers[i] = VK_NULL_HANDLE;
+            }
+            if (g_coloredCubeVertexBufferMemory[i] != VK_NULL_HANDLE) {
+                vkFreeMemory(g_device, g_coloredCubeVertexBufferMemory[i], nullptr);
+                g_coloredCubeVertexBufferMemory[i] = VK_NULL_HANDLE;
+            }
+        }
+        g_numColoredCubes = 0;
+        g_coloredCubePositions.clear();
+        
+        if (g_fpsPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g_device, g_fpsPipeline, nullptr);
+            g_fpsPipeline = VK_NULL_HANDLE;
+        }
+        
+        if (g_fpsFragShaderModule != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(g_device, g_fpsFragShaderModule, nullptr);
+            g_fpsFragShaderModule = VK_NULL_HANDLE;
+        }
+        
+        if (g_fpsVertShaderModule != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(g_device, g_fpsVertShaderModule, nullptr);
+            g_fpsVertShaderModule = VK_NULL_HANDLE;
+        }
+    }
+    
+    g_fpsInitialized = false;
+    // Note: We don't destroy base renderer resources or cube buffers since they're shared
+}
+
+// GLFW mouse helper functions (wrappers for pointer-based GLFW functions)
+extern "C" double heidic_get_cursor_x(GLFWwindow* window) {
+    double xpos, ypos;
+    glfwGetCursorPos(window, &xpos, &ypos);
+    return xpos;
+}
+
+extern "C" double heidic_get_cursor_y(GLFWwindow* window) {
+    double xpos, ypos;
+    glfwGetCursorPos(window, &xpos, &ypos);
+    return ypos;
+}
+
+// ============================================================================
+// RAYCAST FUNCTIONS (ported from vulkan_old)
+// ============================================================================
+
+// AABB structure for ray-AABB intersection
+struct AABB {
+    glm::vec3 min;
+    glm::vec3 max;
+    
+    AABB() : min(0.0f), max(0.0f) {}
+    AABB(glm::vec3 min, glm::vec3 max) : min(min), max(max) {}
+};
+
+// Convert mouse screen position to normalized device coordinates (NDC)
+// NDC: x,y in [-1, 1]
+// Vulkan NDC: Y=1 is top, Y=-1 is bottom (Y points down)
+// GLFW screen: Y=0 is top, Y=height is bottom
+static glm::vec2 screenToNDC(float screenX, float screenY, int width, int height) {
+    float ndcX = (2.0f * screenX / width) - 1.0f;
+    // Map screen Y=0 (top) to NDC Y=-1 (top), screen Y=height (bottom) to NDC Y=1 (bottom)
+    float ndcY = (2.0f * screenY / height) - 1.0f;
+    return glm::vec2(ndcX, ndcY);
+}
+
+// Unproject: Convert NDC coordinates to world-space ray
+// Returns ray origin and direction
+// CORRECT VERSION: NDC Z is always [-1, 1] regardless of depth buffer format
+// perspectiveRH_ZO affects depth buffer mapping, but NDC Z is still [-1, 1]
+static void unproject(glm::vec2 ndc, glm::mat4 invProj, glm::mat4 invView, glm::vec3& rayOrigin, glm::vec3& rayDir) {
+    // NDC clip space: Z = -1 (near), Z = +1 (far)
+    // This is correct for both OpenGL and Vulkan NDC coordinates
+    glm::vec4 clipNear = glm::vec4(ndc.x, ndc.y, -1.0f, 1.0f);  // Near plane Z = -1
+    glm::vec4 clipFar = glm::vec4(ndc.x, ndc.y, 1.0f, 1.0f);    // Far plane Z = +1
+    
+    // Transform to eye space (view space)
+    glm::vec4 eyeNear = invProj * clipNear;
+    eyeNear /= eyeNear.w;  // Perspective divide
+    
+    glm::vec4 eyeFar = invProj * clipFar;
+    eyeFar /= eyeFar.w;  // Perspective divide
+    
+    // Transform to world space
+    glm::vec4 worldNear = invView * eyeNear;
+    glm::vec4 worldFar = invView * eyeFar;
+    
+    glm::vec3 worldNearPoint = glm::vec3(worldNear);
+    glm::vec3 worldFarPoint = glm::vec3(worldFar);
+    
+    // Ray origin is camera position (as per user's working code)
+    rayOrigin = g_fpsCurrentCamPos;
+    
+    // Ray direction: from near point to far point (normalized)
+    // This gives us the correct direction regardless of distance
+    glm::vec3 dirVec = worldFarPoint - worldNearPoint;
+    float dirLen = glm::length(dirVec);
+    if (dirLen > 0.0001f) {
+        rayDir = dirVec / dirLen;
+    } else {
+        // Fallback: if near and far are too close, use direction from camera to far point
+        rayDir = glm::normalize(worldFarPoint - g_fpsCurrentCamPos);
+    }
+}
+
+// Ray-AABB intersection using Möller-Trumbore slab method
+// Returns true if ray hits AABB, and t (distance along ray) if hit
+static bool rayAABB(const glm::vec3& rayOrigin, const glm::vec3& rayDir, const AABB& box, float& tMin, float& tMax) {
+    // Ensure ray direction is normalized (should already be, but double-check for precision)
+    glm::vec3 dir = glm::normalize(rayDir);
+    
+    // Handle division by zero by using a very small epsilon
+    const float epsilon = 1e-6f;
+    glm::vec3 invDir;
+    invDir.x = (fabsf(dir.x) < epsilon) ? (dir.x >= 0.0f ? 1e6f : -1e6f) : (1.0f / dir.x);
+    invDir.y = (fabsf(dir.y) < epsilon) ? (dir.y >= 0.0f ? 1e6f : -1e6f) : (1.0f / dir.y);
+    invDir.z = (fabsf(dir.z) < epsilon) ? (dir.z >= 0.0f ? 1e6f : -1e6f) : (1.0f / dir.z);
+    
+    glm::vec3 t0 = (box.min - rayOrigin) * invDir;
+    glm::vec3 t1 = (box.max - rayOrigin) * invDir;
+    
+    glm::vec3 tMinVec = glm::min(t0, t1);
+    glm::vec3 tMaxVec = glm::max(t0, t1);
+    
+    tMin = glm::max(glm::max(tMinVec.x, tMinVec.y), tMinVec.z);
+    tMax = glm::min(glm::min(tMaxVec.x, tMaxVec.y), tMaxVec.z);
+    
+    // Ray hits if tMax >= tMin AND tMax >= 0 (intersection is in front of or at ray origin)
+    // If tMin > tMax, the ray misses the AABB
+    // If tMax < 0, the entire AABB is behind the ray origin
+    // If tMin < 0 and tMax >= 0, the ray origin is inside the AABB (hit!)
+    
+    return (tMax >= tMin) && (tMax >= 0.0f);
+}
+
+// Create AABB for a cube at position (x,y,z) with half-extents (sx/2, sy/2, sz/2)
+static AABB createCubeAABB(float x, float y, float z, float sx, float sy, float sz) {
+    float halfSx = sx * 0.5f;
+    float halfSy = sy * 0.5f;
+    float halfSz = sz * 0.5f;
+    
+    glm::vec3 min(x - halfSx, y - halfSy, z - halfSz);
+    glm::vec3 max(x + halfSx, y + halfSy, z + halfSz);
+    return AABB(min, max);
+}
+
+// Raycast from screen center (crosshair) against a cube
+// Returns 1 if hit, 0 if miss
+extern "C" int heidic_raycast_cube_hit_center(GLFWwindow* window, float cubeX, float cubeY, float cubeZ, float cubeSx, float cubeSy, float cubeSz) {
+    if (!window) return 0;
+    
+    // Get framebuffer size
+    int fbWidth, fbHeight;
+    glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+    
+    // Use center of screen (where crosshair is)
+    float centerX = fbWidth / 2.0f;
+    float centerY = fbHeight / 2.0f;
+    
+    // Convert to NDC
+    glm::vec2 ndc = screenToNDC(centerX, centerY, fbWidth, fbHeight);
+    
+    // Unproject to get ray
+    glm::mat4 invProj = glm::inverse(g_fpsCurrentProj);
+    glm::mat4 invView = glm::inverse(g_fpsCurrentView);
+    glm::vec3 rayOrigin, rayDir;
+    unproject(ndc, invProj, invView, rayOrigin, rayDir);
+    
+    // Create AABB for cube
+    AABB cubeBox = createCubeAABB(cubeX, cubeY, cubeZ, cubeSx, cubeSy, cubeSz);
+    
+    // Test intersection
+    float tMin, tMax;
+    bool hit = rayAABB(rayOrigin, rayDir, cubeBox, tMin, tMax);
+    
+    return hit ? 1 : 0;
+}
+
+// Get hit point from raycast (call after heidic_raycast_cube_hit_center returns 1)
+// Returns world-space hit position
+extern "C" Vec3 heidic_raycast_cube_hit_point_center(GLFWwindow* window, float cubeX, float cubeY, float cubeZ, float cubeSx, float cubeSy, float cubeSz) {
+    Vec3 result = {0.0f, 0.0f, 0.0f};
+    if (!window) return result;
+    
+    // Get framebuffer size
+    int fbWidth, fbHeight;
+    glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+    
+    // Use center of screen (where crosshair is)
+    float centerX = fbWidth / 2.0f;
+    float centerY = fbHeight / 2.0f;
+    
+    // Convert to NDC
+    glm::vec2 ndc = screenToNDC(centerX, centerY, fbWidth, fbHeight);
+    
+    // Unproject to get ray
+    glm::mat4 invProj = glm::inverse(g_fpsCurrentProj);
+    glm::mat4 invView = glm::inverse(g_fpsCurrentView);
+    glm::vec3 rayOrigin, rayDir;
+    unproject(ndc, invProj, invView, rayOrigin, rayDir);
+    
+    // Create AABB for cube
+    AABB cubeBox = createCubeAABB(cubeX, cubeY, cubeZ, cubeSx, cubeSy, cubeSz);
+    
+    // Test intersection
+    float tMin, tMax;
+    if (rayAABB(rayOrigin, rayDir, cubeBox, tMin, tMax)) {
+        // Calculate hit point (use tMin for closest intersection)
+        glm::vec3 hit = rayOrigin + rayDir * tMin;
+        result.x = hit.x;
+        result.y = hit.y;
+        result.z = hit.z;
+    }
+    
+    return result;
+}
+
+// Get cube position (for HEIDIC to read) - returns Vec3
+extern "C" Vec3 heidic_get_cube_position(int cube_index) {
+    if (cube_index >= 0 && cube_index < static_cast<int>(g_coloredCubePositions.size())) {
+        Vec3 result;
+        result.x = g_coloredCubePositions[cube_index].x;
+        result.y = g_coloredCubePositions[cube_index].y;
+        result.z = g_coloredCubePositions[cube_index].z;
+        return result;
+    } else {
+        Vec3 result = {0.0f, 0.0f, 0.0f};
+        return result;
+    }
+}
+
+// Set cube position (for HEIDIC to update picked-up cube)
+extern "C" void heidic_set_cube_position(int cube_index, float x, float y, float z) {
+    // ALWAYS print first call to verify function is being called
+    static bool first_call = true;
+    if (first_call) {
+        std::cout << "[CUBE_POS] Function called! cube_index=" << cube_index 
+                  << ", size=" << g_coloredCubePositions.size() << std::endl;
+        first_call = false;
+    }
+    
+    if (cube_index >= 0 && cube_index < static_cast<int>(g_coloredCubePositions.size())) {
+        // Debug output (always print first few to verify function is called)
+        static int update_count = 0;
+        if (update_count < 20) {
+            std::cout << "[CUBE_POS] Updated cube " << cube_index << " from (" 
+                      << g_coloredCubePositions[cube_index].x << ", " 
+                      << g_coloredCubePositions[cube_index].y << ", " 
+                      << g_coloredCubePositions[cube_index].z << ") to (" 
+                      << x << ", " << y << ", " << z << ")" << std::endl;
+            update_count++;
+        }
+        g_coloredCubePositions[cube_index].x = x;
+        g_coloredCubePositions[cube_index].y = y;
+        g_coloredCubePositions[cube_index].z = z;
+    } else {
+        std::cout << "[CUBE_POS] ERROR: Invalid cube_index " << cube_index 
+                  << " (size=" << g_coloredCubePositions.size() << ")" << std::endl;
+    }
+}
+
+// Set cube color (for visual feedback when selected/picked up)
+extern "C" void heidic_set_cube_color(int cube_index, float r, float g, float b) {
+    if (cube_index >= 0 && cube_index < g_numColoredCubes && 
+        cube_index < static_cast<int>(g_coloredCubeOriginalColors.size()) &&
+        g_coloredCubeVertexBuffers[cube_index] != VK_NULL_HANDLE) {
+        
+        // Update vertex buffer with new color
+        std::vector<Vertex> coloredCubeVertices = {
+            {{-0.5f, -0.5f,  0.5f}, {r, g, b}},
+            {{ 0.5f, -0.5f,  0.5f}, {r, g, b}},
+            {{ 0.5f,  0.5f,  0.5f}, {r, g, b}},
+            {{-0.5f,  0.5f,  0.5f}, {r, g, b}},
+            {{-0.5f, -0.5f, -0.5f}, {r, g, b}},
+            {{ 0.5f, -0.5f, -0.5f}, {r, g, b}},
+            {{ 0.5f,  0.5f, -0.5f}, {r, g, b}},
+            {{-0.5f,  0.5f, -0.5f}, {r, g, b}},
+        };
+        
+        VkDeviceSize vertexBufferSize = sizeof(coloredCubeVertices[0]) * coloredCubeVertices.size();
+        void* data;
+        vkMapMemory(g_device, g_coloredCubeVertexBufferMemory[cube_index], 0, vertexBufferSize, 0, &data);
+        memcpy(data, coloredCubeVertices.data(), (size_t)vertexBufferSize);
+        vkUnmapMemory(g_device, g_coloredCubeVertexBufferMemory[cube_index]);
+    }
+}
+
+// Restore cube to original color
+extern "C" void heidic_restore_cube_color(int cube_index) {
+    if (cube_index >= 0 && cube_index < static_cast<int>(g_coloredCubeOriginalColors.size())) {
+        const auto& original = g_coloredCubeOriginalColors[cube_index];
+        heidic_set_cube_color(cube_index, original.r, original.g, original.b);
+    }
+}
+
+// Cast ray downward from position and return distance to floor (or -1 if no hit)
+// Floor cube: center at (0, -0.5, 0), size (25, 0.5, 25), so top is at y = 0.0
+extern "C" float heidic_raycast_downward_distance(float x, float y, float z) {
+    // Ray origin: cube position
+    glm::vec3 rayOrigin(x, y, z);
+    // Ray direction: straight down (negative Y)
+    glm::vec3 rayDir(0.0f, -1.0f, 0.0f);
+    
+    // Floor cube AABB: center at (0, -0.5, 0), size (25, 0.5, 25)
+    // Half-extents: (12.5, 0.25, 12.5)
+    // Min: (-12.5, -0.75, -12.5), Max: (12.5, -0.25, -12.5)
+    AABB floorAABB;
+    floorAABB.min = glm::vec3(-12.5f, -0.75f, -12.5f);
+    floorAABB.max = glm::vec3(12.5f, -0.25f, 12.5f);
+    
+    float tMin, tMax;
+    if (rayAABB(rayOrigin, rayDir, floorAABB, tMin, tMax)) {
+        // Ray hit the floor, return the distance
+        // Use tMin (first intersection point)
+        if (tMin >= 0.0f) {
+            return tMin;
+        }
+    }
+    
+    // No hit or hit behind origin
+    return -1.0f;
+}
+
+// Cast ray downward from position and return index of big cube hit (or -1 if no hit or hit small cube)
+extern "C" int heidic_raycast_downward_big_cube(float x, float y, float z) {
+    // Ray origin: position
+    glm::vec3 rayOrigin(x, y, z);
+    // Ray direction: straight down (negative Y)
+    glm::vec3 rayDir(0.0f, -1.0f, 0.0f);
+    
+    int closestHitIndex = -1;
+    float closestT = 1000.0f;  // Large initial distance
+    
+    // Test all big cubes (first 9 cubes, size >= 1.0)
+    for (int i = 0; i < g_numColoredCubes && i < 9; i++) {
+        if (g_coloredCubeSizes[i] >= 1.0f) {  // Only check big cubes
+            float cubeSize = g_coloredCubeSizes[i];
+            AABB cubeBox = createCubeAABB(
+                g_coloredCubePositions[i].x,
+                g_coloredCubePositions[i].y,
+                g_coloredCubePositions[i].z,
+                cubeSize, cubeSize, cubeSize
+            );
+            
+            float tMin, tMax;
+            if (rayAABB(rayOrigin, rayDir, cubeBox, tMin, tMax)) {
+                if (tMin >= 0.0f && tMin < closestT) {
+                    closestT = tMin;
+                    closestHitIndex = i;
+                }
+            }
+        }
+    }
+    
+    return closestHitIndex;
+}
+
+// Get cube size (1.0 for big, 0.5 for small)
+extern "C" float heidic_get_cube_size(int cube_index) {
+    if (cube_index >= 0 && cube_index < g_numColoredCubes) {
+        return g_coloredCubeSizes[cube_index];
+    }
+    return 0.0f;
+}
+
+// Get ray origin and direction from screen center (for debug visualization)
+extern "C" Vec3 heidic_get_center_ray_origin(GLFWwindow* window) {
+    Vec3 result = {0.0f, 0.0f, 0.0f};
+    if (!window) return result;
+    result.x = g_fpsCurrentCamPos.x;
+    result.y = g_fpsCurrentCamPos.y;
+    result.z = g_fpsCurrentCamPos.z;
+    return result;
+}
+
+extern "C" Vec3 heidic_get_center_ray_dir(GLFWwindow* window) {
+    Vec3 result = {0.0f, 0.0f, 0.0f};
+    if (!window) return result;
+    
+    // Get framebuffer size
+    int fbWidth, fbHeight;
+    glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+    
+    // Use center of screen
+    float centerX = fbWidth / 2.0f;
+    float centerY = fbHeight / 2.0f;
+    
+    // Convert to NDC
+    glm::vec2 ndc = screenToNDC(centerX, centerY, fbWidth, fbHeight);
+    
+    // Unproject to get ray
+    glm::mat4 invProj = glm::inverse(g_fpsCurrentProj);
+    glm::mat4 invView = glm::inverse(g_fpsCurrentView);
+    glm::vec3 rayOrigin, rayDir;
+    unproject(ndc, invProj, invView, rayOrigin, rayDir);
+    
+    result.x = rayDir.x;
+    result.y = rayDir.y;
+    result.z = rayDir.z;
+    return result;
+}
+
+// Draw a debug line from point1 to point2 with color (simple implementation for FPS renderer)
+// Note: This is a placeholder - proper line rendering would need a line pipeline
+// For now, we'll just print debug info
+extern "C" void heidic_draw_line(float x1, float y1, float z1, float x2, float y2, float z2, float r, float g, float b) {
+    // TODO: Implement proper line rendering with Vulkan
+    // For now, this is a placeholder - the line would need to be rendered in the FPS renderer
+    // We could add it to the renderer later if needed
+}
+
+extern "C" void heidic_hide_cursor(GLFWwindow* window) {
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 }
 
 // Cleanup cube renderer

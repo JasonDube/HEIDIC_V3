@@ -1,0 +1,66 @@
+// SOA Access Pattern Test
+// Tests transparent SOA access in query iteration
+
+// AoS Component (Array-of-Structures)
+component Position {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+// SOA Component (Structure-of-Arrays)
+component_soa Velocity {
+    x: [f32],
+    y: [f32],
+    z: [f32]
+}
+
+// Mixed query with both AoS and SOA components
+fn update_physics(q: query<Position, Velocity>): void {
+    let delta_time: f32 = 0.016;
+    
+    for entity in q {
+        // AoS access: entity.Position.x
+        // Generated as: q.positions[entity_index].x
+        
+        // SOA access: entity.Velocity.x
+        // Generated as: q.velocities.x[entity_index]
+        
+        // Update position based on velocity
+        entity.Position.x = entity.Position.x + entity.Velocity.x * delta_time;
+        entity.Position.y = entity.Position.y + entity.Velocity.y * delta_time;
+        entity.Position.z = entity.Position.z + entity.Velocity.z * delta_time;
+    }
+}
+
+// Test SOA-only query
+fn update_velocities(q: query<Velocity>): void {
+    for entity in q {
+        // All SOA access
+        entity.Velocity.x = entity.Velocity.x * 0.99;  // Friction
+        entity.Velocity.y = entity.Velocity.y * 0.99;
+        entity.Velocity.z = entity.Velocity.z * 0.99;
+    }
+}
+
+// Test AoS-only query
+fn update_positions(q: query<Position>): void {
+    for entity in q {
+        // All AoS access
+        entity.Position.x = entity.Position.x + 1.0;
+        entity.Position.y = entity.Position.y + 1.0;
+        entity.Position.z = entity.Position.z + 1.0;
+    }
+}
+
+fn main(): void {
+    print("SOA Access Pattern Test\n");
+    print("======================\n");
+    print("\n");
+    print("This test verifies:\n");
+    print("  1. SOA components are validated (all fields must be arrays)\n");
+    print("  2. Transparent access: entity.Velocity.x works for both AoS and SOA\n");
+    print("  3. Correct codegen: AoS -> positions[i].x, SOA -> velocities.x[i]\n");
+    print("\n");
+}
+

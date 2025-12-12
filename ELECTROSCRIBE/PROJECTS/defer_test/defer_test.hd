@@ -1,0 +1,54 @@
+// Defer Statement Test
+// Tests the defer statement feature which ensures cleanup code runs at scope exit
+
+fn test_defer_basic() {
+    let file = open_file("test.txt");
+    defer close_file(file);
+    
+    // Use file
+    write_file(file, "Hello, World!");
+    // close_file will be called automatically when function exits
+}
+
+fn test_defer_multiple() {
+    let resource1 = acquire_resource("resource1");
+    defer release_resource(resource1);
+    
+    let resource2 = acquire_resource("resource2");
+    defer release_resource(resource2);
+    
+    // Both resources will be released in reverse order:
+    // release_resource(resource2) first, then release_resource(resource1)
+}
+
+fn test_defer_in_scope() {
+    {
+        let temp = create_temp_buffer();
+        defer destroy_temp_buffer(temp);
+        
+        // Use temp buffer
+        process_buffer(temp);
+        // destroy_temp_buffer will be called when this block exits
+    }
+    // temp is already destroyed here
+}
+
+fn test_defer_with_early_return() {
+    let handle = open_handle();
+    defer close_handle(handle);
+    
+    if some_condition() {
+        return;  // close_handle will still be called
+    }
+    
+    // More code...
+    // close_handle will be called when function exits normally
+}
+
+fn main() {
+    test_defer_basic();
+    test_defer_multiple();
+    test_defer_in_scope();
+    test_defer_with_early_return();
+}
+

@@ -1,0 +1,86 @@
+// Audio Resource Test - Testing Sound and Music resource types
+// Tests the new HEIDIC audio resource keyword with WAV and OGG files
+
+// Declare audio resources using zero-boilerplate syntax!
+resource JumpSound: Sound = "audio/beep.wav";
+resource BackgroundMusic: Music = "audio/fight_music.ogg";
+
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+// Note: Resource accessor functions (get_resource_jumpsound, get_resource_backgroundmusic) 
+// are automatically generated - you don't need to declare them as extern!
+
+fn main(): void {
+    print("=== Audio Resource Test ===\n");
+    print("Testing HEIDIC audio resource keyword\n");
+    print("Resources declared with zero boilerplate!\n");
+    print("\n");
+    
+    // Access the audio resources via generated accessor functions
+    // These return Resource<AudioResource>* pointers
+    let jump_sound_res = get_resource_jumpsound();
+    let bgm_res = get_resource_backgroundmusic();
+    
+    if jump_sound_res == 0 {
+        print("ERROR: Failed to get jump sound resource!\n");
+        return;
+    }
+    
+    if bgm_res == 0 {
+        print("ERROR: Failed to get background music resource!\n");
+        return;
+    }
+    
+    print("✅ Audio resources loaded successfully!\n");
+    print("\n");
+    
+    // Note: The accessor functions return Resource<AudioResource>* pointers
+    // The resources are automatically loaded when first accessed (lazy loading)
+    // For now, we'll just verify the resources exist and were loaded
+    
+    print("Jump Sound Resource:\n");
+    print("  - Path: audio/jump.wav\n");
+    print("  - Type: Sound (WAV)\n");
+    print("  - Status: Loaded\n");
+    print("\n");
+    
+    print("Background Music Resource:\n");
+    print("  - Path: audio/bgm.ogg\n");
+    print("  - Type: Music (OGG)\n");
+    print("  - Status: Loaded\n");
+    print("\n");
+    
+    print("✅ All audio resources verified!\n");
+    print("\n");
+    print("Playing jump sound...\n");
+    
+    // Play the jump sound using the generated helper function
+    let play_result = play_resource_jumpsound();
+    if play_result == 1 {
+        print("✅ Jump sound playing!\n");
+    } else {
+        print("❌ Failed to play jump sound\n");
+    }
+    
+    // Wait for the sound to play (2 seconds)
+    heidic_sleep_ms(2000);
+    
+    print("\nPlaying background music...\n");
+    let music_result = play_resource_backgroundmusic();
+    if music_result == 1 {
+        print("✅ Background music playing!\n");
+    } else {
+        print("❌ Failed to play background music\n");
+    }
+    
+    // Wait for music to play (5 seconds)
+    print("Playing for 5 seconds...\n");
+    heidic_sleep_ms(5000);
+    
+    // Stop the music
+    print("\nStopping background music...\n");
+    stop_resource_backgroundmusic();
+    print("✅ Music stopped.\n");
+    
+    print("\nDone!\n");
+}

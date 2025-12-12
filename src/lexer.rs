@@ -20,6 +20,8 @@ pub enum Token {
     Loop,
     #[token("return")]
     Return,
+    #[token("defer")]
+    Defer,
     #[token("struct")]
     Struct,
     #[token("component")]
@@ -46,12 +48,26 @@ pub enum Token {
     For,
     #[token("in")]
     In,
+    #[token("match")]
+    Match,
     #[token("query")]
     Query,
     #[token("extern")]
     Extern,
     #[token("resource")]
     Resource,
+    #[token("pipeline")]
+    Pipeline,
+    #[token("uniform")]
+    Uniform,
+    #[token("storage")]
+    Storage,
+    #[token("sampler2D")]
+    Sampler2D,
+    #[token("binding")]
+    Binding,
+    #[token("layout")]
+    Layout,
     
     // Attributes
     #[token("@hot")]
@@ -128,6 +144,10 @@ pub enum Token {
     Mat4,
     
     // Literals
+    #[regex(r"0[xX][0-9A-Fa-f]+", |lex| {
+        let slice = lex.slice();
+        i64::from_str_radix(&slice[2..], 16).ok()
+    })]
     #[regex(r"-?\d+", |lex| lex.slice().parse().ok())]
     Int(i64),
     #[regex(r"-?\d+\.\d+", |lex| lex.slice().parse().ok())]
@@ -136,6 +156,8 @@ pub enum Token {
     True,
     #[token("false")]
     False,
+    #[token("null")]
+    Null,
     #[regex(r#""[^"]*""#, |lex| lex.slice()[1..lex.slice().len()-1].to_string())]
     StringLit(String),
     
@@ -174,6 +196,8 @@ pub enum Token {
     Bang,
     #[token("=")]
     Eq,
+    #[token("?")]
+    Question,
     
     // Delimiters
     #[token("(")]

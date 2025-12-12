@@ -1,0 +1,29 @@
+// Pipeline Declaration Test
+// Tests: pipeline keyword with shader references and layout declaration
+
+pipeline pbr {
+    shader vertex "pbr.vert"
+    shader fragment "pbr.frag"
+    layout {
+        binding 0: uniform SceneData
+        binding 1: storage Materials[]
+        binding 2: sampler2D albedo_maps[]
+    }
+}
+
+pipeline simple {
+    shader vertex "simple.vert"
+    shader fragment "simple.frag"
+}
+
+fn main(): void {
+    print("=== Pipeline Declaration Test ===\n");
+    print("Testing pipeline declarations:\n");
+    print("  - PBR pipeline with descriptor set layout\n");
+    print("  - Simple pipeline without layout\n");
+    print("\n");
+    print("✅ All pipeline declarations compiled successfully!\n");
+    print("Note: Pipeline creation functions are generated automatically.\n");
+    print("Use get_pipeline_pbr() and bind_pipeline_pbr() in your code.\n");
+}
+

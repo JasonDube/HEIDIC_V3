@@ -88,6 +88,48 @@ void heidic_render_obj_mesh(GLFWwindow* window);
 // Cleanup OBJ mesh renderer
 void heidic_cleanup_renderer_obj_mesh();
 
+// FPS Camera renderer (for FPS camera test with floor cube)
+// Initialize renderer and create programmatic floor cube
+int heidic_init_renderer_fps(GLFWwindow* window);
+// Render floor cube with FPS camera (camera_pos_x/y/z, camera_yaw/pitch in degrees)
+void heidic_render_fps(GLFWwindow* window, float camera_pos_x, float camera_pos_y, float camera_pos_z, float camera_yaw, float camera_pitch);
+// Cleanup FPS renderer
+void heidic_cleanup_renderer_fps();
+
+// GLFW mouse helper functions (wrappers for pointer-based GLFW functions)
+// Get cursor X position
+double heidic_get_cursor_x(GLFWwindow* window);
+// Get cursor Y position
+double heidic_get_cursor_y(GLFWwindow* window);
+// Hide cursor (set to disabled mode)
+void heidic_hide_cursor(GLFWwindow* window);
+
+// Raycast functions (for FPS camera pickup system)
+// Raycast from screen center (crosshair) against a cube - returns 1 if hit, 0 if miss
+int heidic_raycast_cube_hit_center(GLFWwindow* window, float cubeX, float cubeY, float cubeZ, float cubeSx, float cubeSy, float cubeSz);
+// Get hit point from raycast (call after heidic_raycast_cube_hit_center returns 1) - returns world-space hit position
+Vec3 heidic_raycast_cube_hit_point_center(GLFWwindow* window, float cubeX, float cubeY, float cubeZ, float cubeSx, float cubeSy, float cubeSz);
+// Get cube position (for HEIDIC to read) - returns Vec3
+Vec3 heidic_get_cube_position(int cube_index);
+// Set cube position (for HEIDIC to update picked-up cube)
+void heidic_set_cube_position(int cube_index, float x, float y, float z);
+// Set cube color (for visual feedback when selected/picked up) - bright white when selected
+void heidic_set_cube_color(int cube_index, float r, float g, float b);
+// Restore cube to original color
+void heidic_restore_cube_color(int cube_index);
+// Cast ray downward from position and return distance to floor (or -1 if no hit)
+float heidic_raycast_downward_distance(float x, float y, float z);
+// Cast ray downward from position and return index of big cube hit (or -1 if no hit or hit small cube)
+// Returns cube index if ray hits a big cube (size >= 1.0), -1 otherwise
+int heidic_raycast_downward_big_cube(float x, float y, float z);
+// Get cube size (1.0 for big, 0.5 for small)
+float heidic_get_cube_size(int cube_index);
+// Get ray origin and direction from screen center (for debug visualization)
+Vec3 heidic_get_center_ray_origin(GLFWwindow* window);
+Vec3 heidic_get_center_ray_dir(GLFWwindow* window);
+// Draw a debug line (placeholder - not yet implemented for FPS renderer)
+void heidic_draw_line(float x1, float y1, float z1, float x2, float y2, float z2, float r, float g, float b);
+
 // UI Window Manager functions (optional - for game interface windows)
 // These functions are only available if UI windows are enabled in project config
 bool ui_manager_init();
