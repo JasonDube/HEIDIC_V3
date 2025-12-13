@@ -5,6 +5,8 @@
 #include <iostream>
 #include <vector>
 #include <cstring>
+#include <cctype>
+#include <sstream>
 #include <thread>
 #include <chrono>
 #include <cmath>
@@ -18,6 +20,8 @@
 #include <windows.h>
 #include <sys/stat.h>
 #include <io.h>
+#include <commdlg.h>
+#include <shlobj.h>
 #else
 #include <unistd.h>
 #include <sys/stat.h>
@@ -6120,16 +6124,24 @@ extern "C" int heidic_init_renderer_obj_mesh(GLFWwindow* window, const char* obj
         return 0;
     }
     
-    // Load shaders
+    // Load shaders - try shaders/ subdirectory first, then current directory
     std::vector<char> vertShaderCode, fragShaderCode;
     try {
-        vertShaderCode = readFile("mesh.vert.spv");
-        fragShaderCode = readFile("mesh.frag.spv");
-        std::cout << "[EDEN] Loaded mesh shaders successfully" << std::endl;
+        vertShaderCode = readFile("shaders/mesh.vert.spv");
+        fragShaderCode = readFile("shaders/mesh.frag.spv");
+        std::cout << "[EDEN] Loaded mesh shaders from shaders/ directory" << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "[EDEN] ERROR: Could not find mesh shader files (mesh.vert.spv, mesh.frag.spv)!" << std::endl;
-        std::cerr << "[EDEN] Error: " << e.what() << std::endl;
-        return 0;
+        // Try current directory
+        try {
+            vertShaderCode = readFile("mesh.vert.spv");
+            fragShaderCode = readFile("mesh.frag.spv");
+            std::cout << "[EDEN] Loaded mesh shaders from current directory" << std::endl;
+        } catch (const std::exception& e2) {
+            std::cerr << "[EDEN] ERROR: Could not find mesh shader files!" << std::endl;
+            std::cerr << "[EDEN] Tried: shaders/mesh.vert.spv and mesh.vert.spv" << std::endl;
+            std::cerr << "[EDEN] Error: " << e2.what() << std::endl;
+            return 0;
+        }
     }
     
     // Create shader modules
@@ -7216,4 +7228,1948 @@ extern "C" void heidic_cleanup_renderer_obj_mesh() {
     g_objMeshResource.reset();
     g_objMeshInitialized = false;
 }
+
+// Helper function to render OBJ mesh into an existing command buffer
+static void render_obj_mesh_to_command_buffer(VkCommandBuffer commandBuffer) {
+    if (!g_objMeshInitialized || !g_objMeshResource) return;
+    
+    // Update rotation
+    auto now = std::chrono::high_resolution_clock::now();
+    float deltaTime = std::chrono::duration<float>(now - g_lastTime).count();
+    g_lastTime = now;
+    g_objMeshRotationAngle += deltaTime * 0.5f; // Slow rotation
+    
+    // Bind pipeline
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_objMeshPipeline);
+    
+    // Update uniform buffer
+    UniformBufferObject ubo = {};
+    
+    // Model matrix - rotate the mesh
+    Vec3 axis = {0.0f, 1.0f, 0.0f};
+    ubo.model = mat4_rotate(axis, g_objMeshRotationAngle);
+    
+    // View matrix - look at mesh from above and to the side
+    Vec3 eye = {3.0f, 3.0f, 3.0f};
+    Vec3 center = {0.0f, 0.0f, 0.0f};
+    Vec3 up = {0.0f, 1.0f, 0.0f};
+    ubo.view = mat4_lookat(eye, center, up);
+    
+    // Projection matrix
+    float fov = 45.0f * 3.14159f / 180.0f;
+    float aspect = (float)g_swapchainExtent.width / (float)g_swapchainExtent.height;
+    float nearPlane = 0.1f;
+    float farPlane = 100.0f;
+    ubo.proj = mat4_perspective(fov, aspect, nearPlane, farPlane);
+    
+    // Vulkan clip space has inverted Y and half Z
+    ubo.proj[1][1] *= -1.0f;
+    
+    // Update uniform buffer
+    void* data;
+    vkMapMemory(g_device, g_objMeshUniformBufferMemory, 0, sizeof(ubo), 0, &data);
+    memcpy(data, &ubo, sizeof(ubo));
+    vkUnmapMemory(g_device, g_objMeshUniformBufferMemory);
+    
+    // Set viewport and scissor
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)g_swapchainExtent.width;
+    viewport.height = (float)g_swapchainExtent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    
+    VkRect2D scissor = {};
+    scissor.offset = {0, 0};
+    scissor.extent = g_swapchainExtent;
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    
+    // Bind descriptor set
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_objMeshPipelineLayout, 0, 1, &g_objMeshDescriptorSet, 0, nullptr);
+    
+    // Bind vertex buffer (from MeshResource)
+    VkBuffer vertexBuffer = g_objMeshResource->getVertexBuffer();
+    VkBuffer indexBuffer = g_objMeshResource->getIndexBuffer();
+    uint32_t indexCount = g_objMeshResource->getIndexCount();
+    
+    VkBuffer vertexBuffers[] = {vertexBuffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+    
+    // Bind index buffer
+    vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    
+    // Draw mesh using indexed drawing
+    vkCmdDrawIndexed(commandBuffer, indexCount, 1, 0, 0, 0);
+}
+
+// ============================================================================
+// ESE (Echo Synapse Editor) - ImGui-enabled OBJ viewer
+// ============================================================================
+
+// HDM (HEIDIC Model) Binary Format - Self-contained model files
+// Packs geometry, textures, and properties into a single file
+
+// HDM File Header (magic + offsets)
+struct HDMHeader {
+    char magic[4] = {'H', 'D', 'M', '\0'};
+    uint32_t version = 2;           // Version 2 = binary packed format
+    uint32_t props_offset = 0;
+    uint32_t props_size = 0;
+    uint32_t geometry_offset = 0;
+    uint32_t geometry_size = 0;
+    uint32_t texture_offset = 0;
+    uint32_t texture_size = 0;
+    uint32_t reserved[4] = {0};     // Future expansion
+};
+
+// HDM Item Properties
+struct HDMItemProperties {
+    int item_type_id = 0;           // Unique item type identifier
+    char item_name[64] = "Unnamed"; // Display name
+    int trade_value = 0;            // Trading value (0 = not tradeable)
+    float condition = 1.0f;         // Durability (0.0 to 1.0)
+    float weight = 1.0f;            // Mass for physics
+    int category = 0;               // 0=generic, 1=consumable, 2=part, 3=resource, 4=scrap, 5=furniture, 6=weapon, 7=tool
+    bool is_salvaged = false;       // Salvaged item flag
+};
+
+struct HDMPhysicsProperties {
+    int collision_type = 1;         // 0=none, 1=box, 2=mesh
+    float collision_bounds[3] = {1.0f, 1.0f, 1.0f};  // Collision box size
+    bool is_static = true;          // Static or dynamic physics
+    float mass = 1.0f;              // Physics mass (if dynamic)
+};
+
+struct HDMModelProperties {
+    char obj_path[256] = "";        // Original OBJ path (for reference only)
+    char texture_path[256] = "";    // Original texture path (for reference only)
+    float scale[3] = {1.0f, 1.0f, 1.0f};
+    float origin_offset[3] = {0.0f, 0.0f, 0.0f};  // Model origin adjustment
+};
+
+struct HDMControlPoint {
+    char name[32] = "";
+    float position[3] = {0.0f, 0.0f, 0.0f};
+};
+
+struct HDMProperties {
+    char hdm_version[16] = "2.0";
+    HDMModelProperties model;
+    HDMItemProperties item;
+    HDMPhysicsProperties physics;
+    HDMControlPoint control_points[8];  // Up to 8 control points
+    int num_control_points = 0;
+};
+
+// Packed geometry data (extracted from OBJ)
+struct HDMVertex {
+    float position[3];
+    float normal[3];
+    float texcoord[2];
+};
+
+struct HDMGeometry {
+    std::vector<HDMVertex> vertices;
+    std::vector<uint32_t> indices;
+};
+
+// Packed texture data
+struct HDMTexture {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t format = 0;            // 0=RGBA8, 1=DDS
+    std::vector<uint8_t> data;
+};
+
+// Category names for display
+static const char* g_categoryNames[] = {
+    "Generic",
+    "Consumable", 
+    "Part",
+    "Resource",
+    "Scrap",
+    "Furniture",
+    "Weapon",
+    "Tool"
+};
+
+// ESE state
+static bool g_eseInitialized = false;
+static std::string g_eseCurrentObjPath = "";
+static std::string g_eseCurrentTexturePath = "";
+static bool g_eseModelLoaded = false;
+static bool g_eseOpenObjDialog = false;
+static bool g_eseOpenTextureDialog = false;
+static bool g_eseOpenHdmDialog = false;
+static bool g_eseSaveHdmDialog = false;
+static HDMProperties g_eseHdmProperties;  // Current model properties
+static bool g_esePropertiesModified = false;  // Track unsaved changes
+static HDMGeometry g_esePackedGeometry;   // Packed geometry from loaded OBJ
+static HDMTexture g_esePackedTexture;     // Packed texture data
+static bool g_eseGeometryPacked = false;  // Has geometry been extracted?
+static bool g_eseTexturePacked = false;   // Has texture been loaded?
+
+#ifdef USE_IMGUI
+// ESE ImGui state
+static VkDescriptorPool g_eseImguiDescriptorPool = VK_NULL_HANDLE;
+static bool g_eseImguiInitialized = false;
+#endif
+
+// ============================================================================
+// HDM Binary Format Save/Load Functions
+// ============================================================================
+
+// Extract geometry from currently loaded OBJ mesh
+static bool hdm_extract_geometry_from_mesh(HDMGeometry& geom) {
+    if (!g_objMeshResource) {
+        std::cerr << "[HDM] No mesh loaded to extract geometry from!" << std::endl;
+        return false;
+    }
+    
+    // Get vertices and indices from the mesh resource
+    const auto& meshVertices = g_objMeshResource->getVertices();
+    const auto& meshIndices = g_objMeshResource->getIndices();
+    
+    geom.vertices.clear();
+    geom.indices.clear();
+    
+    // Convert MeshVertex to HDMVertex format
+    for (const auto& v : meshVertices) {
+        HDMVertex hdmV;
+        hdmV.position[0] = v.pos[0];
+        hdmV.position[1] = v.pos[1];
+        hdmV.position[2] = v.pos[2];
+        hdmV.normal[0] = v.normal[0];
+        hdmV.normal[1] = v.normal[1];
+        hdmV.normal[2] = v.normal[2];
+        hdmV.texcoord[0] = v.uv[0];  // MeshVertex uses 'uv' not 'texCoord'
+        hdmV.texcoord[1] = v.uv[1];
+        geom.vertices.push_back(hdmV);
+    }
+    
+    geom.indices = meshIndices;
+    
+    std::cout << "[HDM] Extracted geometry: " << geom.vertices.size() << " vertices, " 
+              << geom.indices.size() << " indices" << std::endl;
+    return true;
+}
+
+// Load texture file into HDMTexture (raw RGBA)
+static bool hdm_load_texture_data(const char* filepath, HDMTexture& tex) {
+    if (!filepath || strlen(filepath) == 0) {
+        std::cerr << "[HDM] No texture path specified!" << std::endl;
+        return false;
+    }
+    
+    // Use stb_image to load the texture
+    int width, height, channels;
+    unsigned char* data = stbi_load(filepath, &width, &height, &channels, 4);  // Force RGBA
+    
+    if (!data) {
+        std::cerr << "[HDM] Failed to load texture: " << filepath << std::endl;
+        return false;
+    }
+    
+    tex.width = width;
+    tex.height = height;
+    tex.format = 0;  // RGBA8
+    tex.data.resize(width * height * 4);
+    memcpy(tex.data.data(), data, width * height * 4);
+    
+    stbi_image_free(data);
+    
+    std::cout << "[HDM] Loaded texture: " << width << "x" << height << " (" 
+              << tex.data.size() << " bytes)" << std::endl;
+    return true;
+}
+
+// Save HDM binary file (packed format)
+static bool hdm_save_binary(const char* filepath, const HDMProperties& props, 
+                            const HDMGeometry& geom, const HDMTexture& tex) {
+    std::ofstream file(filepath, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "[HDM] Failed to open file for writing: " << filepath << std::endl;
+        return false;
+    }
+    
+    // Calculate sizes
+    size_t propsSize = sizeof(HDMProperties);
+    size_t geomHeaderSize = sizeof(uint32_t) * 2;  // vertex count + index count
+    size_t geomVerticesSize = geom.vertices.size() * sizeof(HDMVertex);
+    size_t geomIndicesSize = geom.indices.size() * sizeof(uint32_t);
+    size_t geomTotalSize = geomHeaderSize + geomVerticesSize + geomIndicesSize;
+    size_t texHeaderSize = sizeof(uint32_t) * 3;  // width + height + format
+    size_t texDataSize = tex.data.size();
+    size_t texTotalSize = texHeaderSize + texDataSize;
+    
+    // Build header
+    HDMHeader header;
+    header.version = 2;
+    header.props_offset = sizeof(HDMHeader);
+    header.props_size = propsSize;
+    header.geometry_offset = header.props_offset + propsSize;
+    header.geometry_size = geomTotalSize;
+    header.texture_offset = header.geometry_offset + geomTotalSize;
+    header.texture_size = texTotalSize;
+    
+    // Write header
+    file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    
+    // Write properties
+    file.write(reinterpret_cast<const char*>(&props), sizeof(props));
+    
+    // Write geometry header
+    uint32_t vertexCount = geom.vertices.size();
+    uint32_t indexCount = geom.indices.size();
+    file.write(reinterpret_cast<const char*>(&vertexCount), sizeof(vertexCount));
+    file.write(reinterpret_cast<const char*>(&indexCount), sizeof(indexCount));
+    
+    // Write vertices
+    if (!geom.vertices.empty()) {
+        file.write(reinterpret_cast<const char*>(geom.vertices.data()), geomVerticesSize);
+    }
+    
+    // Write indices
+    if (!geom.indices.empty()) {
+        file.write(reinterpret_cast<const char*>(geom.indices.data()), geomIndicesSize);
+    }
+    
+    // Write texture header
+    file.write(reinterpret_cast<const char*>(&tex.width), sizeof(tex.width));
+    file.write(reinterpret_cast<const char*>(&tex.height), sizeof(tex.height));
+    file.write(reinterpret_cast<const char*>(&tex.format), sizeof(tex.format));
+    
+    // Write texture data
+    if (!tex.data.empty()) {
+        file.write(reinterpret_cast<const char*>(tex.data.data()), texDataSize);
+    }
+    
+    file.close();
+    
+    std::cout << "[HDM] Saved binary HDM: " << filepath << std::endl;
+    std::cout << "      Total size: " << (sizeof(header) + propsSize + geomTotalSize + texTotalSize) << " bytes" << std::endl;
+    std::cout << "      Geometry: " << vertexCount << " verts, " << indexCount << " indices" << std::endl;
+    std::cout << "      Texture: " << tex.width << "x" << tex.height << std::endl;
+    
+    return true;
+}
+
+// Load HDM binary file
+static bool hdm_load_binary(const char* filepath, HDMProperties& props, 
+                            HDMGeometry& geom, HDMTexture& tex) {
+    std::ifstream file(filepath, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "[HDM] Failed to open file: " << filepath << std::endl;
+        return false;
+    }
+    
+    // Read header
+    HDMHeader header;
+    file.read(reinterpret_cast<char*>(&header), sizeof(header));
+    
+    // Verify magic
+    if (header.magic[0] != 'H' || header.magic[1] != 'D' || header.magic[2] != 'M') {
+        std::cerr << "[HDM] Invalid HDM file (bad magic): " << filepath << std::endl;
+        file.close();
+        return false;
+    }
+    
+    // Check version
+    if (header.version < 2) {
+        std::cerr << "[HDM] Old HDM format (v" << header.version << "), please re-save with ESE" << std::endl;
+        file.close();
+        return false;
+    }
+    
+    // Read properties
+    file.seekg(header.props_offset);
+    file.read(reinterpret_cast<char*>(&props), sizeof(props));
+    
+    // Read geometry
+    file.seekg(header.geometry_offset);
+    uint32_t vertexCount, indexCount;
+    file.read(reinterpret_cast<char*>(&vertexCount), sizeof(vertexCount));
+    file.read(reinterpret_cast<char*>(&indexCount), sizeof(indexCount));
+    
+    geom.vertices.resize(vertexCount);
+    geom.indices.resize(indexCount);
+    
+    if (vertexCount > 0) {
+        file.read(reinterpret_cast<char*>(geom.vertices.data()), vertexCount * sizeof(HDMVertex));
+    }
+    if (indexCount > 0) {
+        file.read(reinterpret_cast<char*>(geom.indices.data()), indexCount * sizeof(uint32_t));
+    }
+    
+    // Read texture
+    file.seekg(header.texture_offset);
+    file.read(reinterpret_cast<char*>(&tex.width), sizeof(tex.width));
+    file.read(reinterpret_cast<char*>(&tex.height), sizeof(tex.height));
+    file.read(reinterpret_cast<char*>(&tex.format), sizeof(tex.format));
+    
+    size_t texDataSize = tex.width * tex.height * 4;  // Assuming RGBA8
+    if (texDataSize > 0) {
+        tex.data.resize(texDataSize);
+        file.read(reinterpret_cast<char*>(tex.data.data()), texDataSize);
+    }
+    
+    file.close();
+    
+    std::cout << "[HDM] Loaded binary HDM: " << filepath << std::endl;
+    std::cout << "      Geometry: " << vertexCount << " verts, " << indexCount << " indices" << std::endl;
+    std::cout << "      Texture: " << tex.width << "x" << tex.height << std::endl;
+    
+    return true;
+}
+
+// Simple base64 encoding (for ASCII HDM texture data)
+static const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static inline bool is_base64_char(unsigned char c) {
+    return (isalnum(c) || (c == '+') || (c == '/'));
+}
+
+static std::string base64_encode(const unsigned char* data, size_t len) {
+    std::string ret;
+    int i = 0;
+    int j = 0;
+    unsigned char char_array_3[3];
+    unsigned char char_array_4[4];
+    
+    while (len--) {
+        char_array_3[i++] = *(data++);
+        if (i == 3) {
+            char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+            char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+            char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+            char_array_4[3] = char_array_3[2] & 0x3f;
+            
+            for (i = 0; i < 4; i++) ret += base64_chars[char_array_4[i]];
+            i = 0;
+        }
+    }
+    
+    if (i) {
+        for (j = i; j < 3; j++) char_array_3[j] = '\0';
+        char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+        char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+        char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+        for (j = 0; j < i + 1; j++) ret += base64_chars[char_array_4[j]];
+        while (i++ < 3) ret += '=';
+    }
+    return ret;
+}
+
+static std::vector<unsigned char> base64_decode(const std::string& encoded) {
+    int in_len = encoded.size();
+    int i = 0;
+    int j = 0;
+    int in = 0;
+    unsigned char char_array_4[4], char_array_3[3];
+    std::vector<unsigned char> ret;
+    
+    const char* base64_chars_ptr = base64_chars;
+    
+    while (in_len-- && (encoded[in] != '=') && is_base64_char(encoded[in])) {
+        char_array_4[i++] = encoded[in]; in++;
+        if (i == 4) {
+            for (i = 0; i < 4; i++) {
+                const char* pos = strchr(base64_chars_ptr, char_array_4[i]);
+                if (pos) char_array_4[i] = pos - base64_chars_ptr;
+                else char_array_4[i] = 0;
+            }
+            char_array_3[0] = (char_array_4[0] << 2) + ((char_array_4[1] & 0x30) >> 4);
+            char_array_3[1] = ((char_array_4[1] & 0xf) << 4) + ((char_array_4[2] & 0x3c) >> 2);
+            char_array_3[2] = ((char_array_4[2] & 0x3) << 6) + char_array_4[3];
+            
+            for (i = 0; i < 3; i++) ret.push_back(char_array_3[i]);
+            i = 0;
+        }
+    }
+    
+    if (i) {
+        for (j = i; j < 4; j++) char_array_4[j] = 0;
+        for (j = 0; j < 4; j++) {
+            if (in - 4 + j >= 0 && in - 4 + j < (int)encoded.size() && encoded[in - 4 + j] != '=') {
+                const char* pos = strchr(base64_chars_ptr, encoded[in - 4 + j]);
+                if (pos) char_array_4[j] = pos - base64_chars_ptr;
+                else char_array_4[j] = 0;
+            }
+        }
+        char_array_3[0] = (char_array_4[0] << 2) + ((char_array_4[1] & 0x30) >> 4);
+        char_array_3[1] = ((char_array_4[1] & 0xf) << 4) + ((char_array_4[2] & 0x3c) >> 2);
+        char_array_3[2] = ((char_array_4[2] & 0x3) << 6) + char_array_4[3];
+        for (j = 0; j < i - 1; j++) ret.push_back(char_array_3[j]);
+    }
+    return ret;
+}
+
+// Save HDM ASCII format (.hdma) - human-readable JSON with base64-encoded geometry and texture
+static bool hdm_save_ascii(const char* filepath, const HDMProperties& props,
+                           const HDMGeometry& geom, const HDMTexture& tex) {
+    std::ofstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "[HDM] Failed to open file for writing: " << filepath << std::endl;
+        return false;
+    }
+    
+    file << "{\n";
+    file << "  \"hdm_version\": \"2.0\",\n";
+    file << "  \"format\": \"ascii\",\n";
+    file << "  \n";
+    
+    // Properties
+    file << "  \"properties\": {\n";
+    file << "    \"model\": {\n";
+    file << "      \"obj_path\": \"" << props.model.obj_path << "\",\n";
+    file << "      \"texture_path\": \"" << props.model.texture_path << "\",\n";
+    file << "      \"scale\": [" << props.model.scale[0] << ", " << props.model.scale[1] << ", " << props.model.scale[2] << "],\n";
+    file << "      \"origin_offset\": [" << props.model.origin_offset[0] << ", " << props.model.origin_offset[1] << ", " << props.model.origin_offset[2] << "]\n";
+    file << "    },\n";
+    file << "    \"item\": {\n";
+    file << "      \"item_type_id\": " << props.item.item_type_id << ",\n";
+    file << "      \"item_name\": \"" << props.item.item_name << "\",\n";
+    file << "      \"trade_value\": " << props.item.trade_value << ",\n";
+    file << "      \"condition\": " << props.item.condition << ",\n";
+    file << "      \"weight\": " << props.item.weight << ",\n";
+    file << "      \"category\": " << props.item.category << ",\n";
+    file << "      \"is_salvaged\": " << (props.item.is_salvaged ? "true" : "false") << "\n";
+    file << "    },\n";
+    file << "    \"physics\": {\n";
+    file << "      \"collision_type\": " << props.physics.collision_type << ",\n";
+    file << "      \"collision_bounds\": [" << props.physics.collision_bounds[0] << ", " << props.physics.collision_bounds[1] << ", " << props.physics.collision_bounds[2] << "],\n";
+    file << "      \"is_static\": " << (props.physics.is_static ? "true" : "false") << ",\n";
+    file << "      \"mass\": " << props.physics.mass << "\n";
+    file << "    },\n";
+    file << "    \"control_points\": [\n";
+    for (int i = 0; i < props.num_control_points; i++) {
+        file << "      {\"name\": \"" << props.control_points[i].name << "\", \"position\": [" 
+             << props.control_points[i].position[0] << ", " 
+             << props.control_points[i].position[1] << ", " 
+             << props.control_points[i].position[2] << "]}";
+        if (i < props.num_control_points - 1) file << ",";
+        file << "\n";
+    }
+    file << "    ]\n";
+    file << "  },\n";
+    
+    // Geometry (base64 encoded)
+    file << "  \"geometry\": {\n";
+    file << "    \"vertex_count\": " << geom.vertices.size() << ",\n";
+    file << "    \"index_count\": " << geom.indices.size() << ",\n";
+    if (!geom.vertices.empty()) {
+        std::string vertData = base64_encode(reinterpret_cast<const unsigned char*>(geom.vertices.data()), 
+                                            geom.vertices.size() * sizeof(HDMVertex));
+        file << "    \"vertices_base64\": \"" << vertData << "\",\n";
+    }
+    if (!geom.indices.empty()) {
+        std::string idxData = base64_encode(reinterpret_cast<const unsigned char*>(geom.indices.data()),
+                                           geom.indices.size() * sizeof(uint32_t));
+        file << "    \"indices_base64\": \"" << idxData << "\"\n";
+    }
+    file << "  },\n";
+    
+    // Texture (base64 encoded)
+    file << "  \"texture\": {\n";
+    file << "    \"width\": " << tex.width << ",\n";
+    file << "    \"height\": " << tex.height << ",\n";
+    file << "    \"format\": " << tex.format << ",\n";
+    if (!tex.data.empty()) {
+        std::string texData = base64_encode(tex.data.data(), tex.data.size());
+        file << "    \"data_base64\": \"" << texData << "\"\n";
+    }
+    file << "  }\n";
+    file << "}\n";
+    
+    file.close();
+    std::cout << "[HDM] Saved ASCII HDM: " << filepath << std::endl;
+    return true;
+}
+
+// Load HDM ASCII format (.hdma)
+static bool hdm_load_ascii(const char* filepath, HDMProperties& props,
+                          HDMGeometry& geom, HDMTexture& tex) {
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "[HDM] Failed to open file for reading: " << filepath << std::endl;
+        return false;
+    }
+    
+    // Simple JSON parser (basic, assumes well-formed JSON)
+    // For production, use a proper JSON library, but for now this works
+    std::string line;
+    std::string json;
+    while (std::getline(file, line)) {
+        json += line + "\n";
+    }
+    file.close();
+    
+    // Very basic JSON parsing - just extract key values
+    // This is a simplified parser - for production use a proper JSON library
+    std::istringstream iss(json);
+    std::string token;
+    
+    // Parse properties
+    // For now, we'll use a simple approach: look for key-value pairs
+    // This is a minimal implementation - a full JSON parser would be better
+    
+    // For ASCII format, we'll need to parse JSON properly
+    // For now, let's use a simpler approach: read the binary format if available,
+    // or implement a proper JSON parser
+    
+    // TEMPORARY: For now, ASCII format loading is not fully implemented
+    // The user should use binary format for now, or we need a JSON library
+    std::cerr << "[HDM] WARNING: ASCII HDM loading is not yet fully implemented!" << std::endl;
+    std::cerr << "[HDM] Please use binary .hdm format for now, or implement a JSON parser." << std::endl;
+    return false;
+}
+
+// Create Vulkan mesh from packed HDM data (for loading HDM files)
+// Note: This reuses the OBJ mesh loading infrastructure 
+static bool hdm_create_mesh_from_packed(GLFWwindow* window, const HDMGeometry& geom, const HDMTexture& tex) {
+    if (geom.vertices.empty()) {
+        std::cerr << "[HDM] No geometry to create mesh from!" << std::endl;
+        return false;
+    }
+    
+    std::cout << "[HDM] Creating mesh from packed data..." << std::endl;
+    std::cout << "[HDM] Vertices: " << geom.vertices.size() << ", Indices: " << geom.indices.size() << std::endl;
+    
+    // Convert HDMVertex to MeshVertex format (which createFromData expects)
+    std::vector<MeshVertex> vertices;
+    vertices.reserve(geom.vertices.size());
+    
+    for (const auto& v : geom.vertices) {
+        MeshVertex mv;
+        mv.pos[0] = v.position[0];
+        mv.pos[1] = v.position[1];
+        mv.pos[2] = v.position[2];
+        mv.normal[0] = v.normal[0];
+        mv.normal[1] = v.normal[1];
+        mv.normal[2] = v.normal[2];
+        mv.uv[0] = v.texcoord[0];
+        mv.uv[1] = v.texcoord[1];
+        vertices.push_back(mv);
+    }
+    
+    // Create mesh resource with the packed data
+    g_objMeshResource = std::make_unique<MeshResource>();
+    if (!g_objMeshResource->createFromData(g_device, g_physicalDevice, 
+                                            vertices, geom.indices)) {
+        std::cerr << "[HDM] Failed to create mesh resource!" << std::endl;
+        g_objMeshResource.reset();
+        return false;
+    }
+    
+    // CRITICAL: Initialize pipeline if not already initialized
+    // The pipeline must exist before we can render
+    if (g_objMeshPipeline == VK_NULL_HANDLE) {
+        std::cout << "[HDM] Pipeline not initialized, initializing now..." << std::endl;
+        
+        // We have the mesh, now we need to initialize the pipeline infrastructure
+        // This is a subset of heidic_init_renderer_obj_mesh - we'll do the minimum needed
+        
+        // Load shaders - try mesh shaders first (in shaders/ subdirectory or current dir), fall back to 3D shaders
+        std::vector<char> vertShaderCode, fragShaderCode;
+        bool loadedMeshShaders = false;
+        
+        // Try shaders/mesh.vert.spv first (common location)
+        try {
+            vertShaderCode = readFile("shaders/mesh.vert.spv");
+            fragShaderCode = readFile("shaders/mesh.frag.spv");
+            std::cout << "[HDM] Loaded mesh shaders (shaders/mesh.vert.spv, shaders/mesh.frag.spv)" << std::endl;
+            loadedMeshShaders = true;
+        } catch (const std::exception& e) {
+            // Try current directory
+            try {
+                vertShaderCode = readFile("mesh.vert.spv");
+                fragShaderCode = readFile("mesh.frag.spv");
+                std::cout << "[HDM] Loaded mesh shaders (mesh.vert.spv, mesh.frag.spv)" << std::endl;
+                loadedMeshShaders = true;
+            } catch (const std::exception& e2) {
+                // Fall back to default 3D shaders (WARNING: these don't match MeshVertex format!)
+                std::cout << "[HDM] WARNING: Mesh shaders not found, trying default 3D shaders..." << std::endl;
+                std::cout << "[HDM] NOTE: 3D shaders may not work correctly with OBJ mesh format!" << std::endl;
+                try {
+                    vertShaderCode = readFile("vert_3d.spv");
+                    fragShaderCode = readFile("frag_3d.spv");
+                    std::cout << "[HDM] Loaded default 3D shaders (vert_3d.spv, frag_3d.spv)" << std::endl;
+                    std::cerr << "[HDM] WARNING: Using incompatible shaders - model may not render correctly!" << std::endl;
+                } catch (const std::exception& e3) {
+                    std::cerr << "[HDM] ERROR: Could not load any shaders!" << std::endl;
+                    std::cerr << "[HDM] Tried: shaders/mesh.vert.spv, mesh.vert.spv, and vert_3d.spv" << std::endl;
+                    std::cerr << "[HDM] Error: " << e3.what() << std::endl;
+                    std::cerr << "[HDM] Please copy mesh.vert.spv and mesh.frag.spv to the ESE project directory!" << std::endl;
+                    // Cleanup mesh resource on failure
+                    g_objMeshResource.reset();
+                    return false;
+                }
+            }
+        }
+        
+        // Create shader modules
+        VkShaderModuleCreateInfo vertCreateInfo = {};
+        vertCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        vertCreateInfo.codeSize = vertShaderCode.size();
+        vertCreateInfo.pCode = reinterpret_cast<const uint32_t*>(vertShaderCode.data());
+        
+        if (vkCreateShaderModule(g_device, &vertCreateInfo, nullptr, &g_objMeshVertShaderModule) != VK_SUCCESS) {
+            std::cerr << "[HDM] ERROR: Failed to create vertex shader module!" << std::endl;
+            return false;
+        }
+        
+        VkShaderModuleCreateInfo fragCreateInfo = {};
+        fragCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        fragCreateInfo.codeSize = fragShaderCode.size();
+        fragCreateInfo.pCode = reinterpret_cast<const uint32_t*>(fragShaderCode.data());
+        
+        if (vkCreateShaderModule(g_device, &fragCreateInfo, nullptr, &g_objMeshFragShaderModule) != VK_SUCCESS) {
+            std::cerr << "[HDM] ERROR: Failed to create fragment shader module!" << std::endl;
+            vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+            return false;
+        }
+        
+        // Create descriptor set layout, pipeline layout, uniform buffer, descriptor pool, etc.
+        // (Reusing the exact code from heidic_init_renderer_obj_mesh - see lines 6159-6550)
+        // For brevity, we'll call heidic_init_renderer_obj_mesh with empty paths to initialize infrastructure,
+        // but that won't work since it needs a real OBJ file.
+        
+        // SIMPLEST FIX: Call heidic_init_renderer_obj_mesh with the mesh we just created
+        // But that function loads its own mesh. So we need to either:
+        // 1. Extract pipeline init into helper (best, but lots of code)
+        // 2. Create a dummy OBJ file temporarily (hacky)
+        // 3. Duplicate the pipeline creation code here (verbose but works)
+        
+        // For now, let's use approach 3 - duplicate the essential parts
+        // We'll create descriptor set layout, pipeline layout, uniform buffer, descriptor pool, and pipeline
+        
+        // Create descriptor set layout (UBO + texture sampler) - from line 6159
+        VkDescriptorSetLayoutBinding uboLayoutBinding = {};
+        uboLayoutBinding.binding = 0;
+        uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        uboLayoutBinding.descriptorCount = 1;
+        uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        
+        VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+        samplerLayoutBinding.binding = 1;
+        samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        samplerLayoutBinding.descriptorCount = 1;
+        samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        
+        VkDescriptorSetLayoutBinding bindings[] = {uboLayoutBinding, samplerLayoutBinding};
+        VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 2;
+        layoutInfo.pBindings = bindings;
+        
+        if (vkCreateDescriptorSetLayout(g_device, &layoutInfo, nullptr, &g_objMeshDescriptorSetLayout) != VK_SUCCESS) {
+            std::cerr << "[HDM] ERROR: Failed to create descriptor set layout!" << std::endl;
+            vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+            vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
+            return false;
+        }
+        
+        // Create pipeline layout - from line 6185
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &g_objMeshDescriptorSetLayout;
+        
+        if (vkCreatePipelineLayout(g_device, &pipelineLayoutInfo, nullptr, &g_objMeshPipelineLayout) != VK_SUCCESS) {
+            std::cerr << "[HDM] ERROR: Failed to create pipeline layout!" << std::endl;
+            vkDestroyDescriptorSetLayout(g_device, g_objMeshDescriptorSetLayout, nullptr);
+            vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+            vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
+            return false;
+        }
+        
+        // Create uniform buffer - from line 6199
+        VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+        createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     g_objMeshUniformBuffer, g_objMeshUniformBufferMemory);
+        
+        // Create dummy texture and descriptor set (reuse code from lines 6238-6440)
+        // For now, let's create a minimal dummy texture setup
+        uint32_t dummyData = 0xFFFFFFFF;
+        createImage(1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    g_objMeshDummyTexture, g_objMeshDummyTextureMemory);
+        
+        VkCommandBuffer cmdBuf = beginSingleTimeCommands();
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = g_objMeshDummyTexture;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        
+        VkBuffer stagingBuf;
+        VkDeviceMemory stagingMem;
+        createBuffer(4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuf, stagingMem);
+        void* mapData;
+        vkMapMemory(g_device, stagingMem, 0, 4, 0, &mapData);
+        memcpy(mapData, &dummyData, 4);
+        vkUnmapMemory(g_device, stagingMem);
+        
+        VkBufferImageCopy region = {};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {1, 1, 1};
+        vkCmdCopyBufferToImage(cmdBuf, stagingBuf, g_objMeshDummyTexture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        endSingleTimeCommands(cmdBuf);
+        vkDestroyBuffer(g_device, stagingBuf, nullptr);
+        vkFreeMemory(g_device, stagingMem, nullptr);
+        
+        VkImageViewCreateInfo viewInfo = {};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = g_objMeshDummyTexture;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCreateImageView(g_device, &viewInfo, nullptr, &g_objMeshDummyTextureView);
+        
+        VkSamplerCreateInfo samplerInfo = {};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        vkCreateSampler(g_device, &samplerInfo, nullptr, &g_objMeshDummySampler);
+        
+        // Create descriptor pool and set - from lines 6356-6440
+        VkDescriptorPoolSize poolSizes[2] = {};
+        poolSizes[0] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};
+        poolSizes[1] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+        VkDescriptorPoolCreateInfo poolInfo = {};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes = poolSizes;
+        poolInfo.maxSets = 1;
+        vkCreateDescriptorPool(g_device, &poolInfo, nullptr, &g_objMeshDescriptorPool);
+        
+        VkDescriptorSetAllocateInfo allocInfo = {};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = g_objMeshDescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &g_objMeshDescriptorSetLayout;
+        vkAllocateDescriptorSets(g_device, &allocInfo, &g_objMeshDescriptorSet);
+        
+        VkDescriptorBufferInfo bufferInfo = {g_objMeshUniformBuffer, 0, sizeof(UniformBufferObject)};
+        VkDescriptorImageInfo imageInfo = {g_objMeshDummySampler, g_objMeshDummyTextureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet writes[2] = {};
+        writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, g_objMeshDescriptorSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &bufferInfo, nullptr};
+        writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, g_objMeshDescriptorSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imageInfo, nullptr, nullptr};
+        vkUpdateDescriptorSets(g_device, 2, writes, 0, nullptr);
+        
+        // Create graphics pipeline - from lines 6442-6550 (using mesh's vertex input)
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, g_objMeshVertShaderModule, "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_objMeshFragShaderModule, "main", nullptr};
+        
+        VkVertexInputBindingDescription bindingDesc = g_objMeshResource->getVertexInputBinding();
+        std::vector<VkVertexInputAttributeDescription> attrDescs = g_objMeshResource->getVertexInputAttributes();
+        VkPipelineVertexInputStateCreateInfo vertexInput = {};
+        vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInput.vertexBindingDescriptionCount = 1;
+        vertexInput.pVertexBindingDescriptions = &bindingDesc;
+        vertexInput.vertexAttributeDescriptionCount = attrDescs.size();
+        vertexInput.pVertexAttributeDescriptions = attrDescs.data();
+        
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, nullptr, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE};
+        
+        // Use dynamic viewport and scissor (since render_obj_mesh_to_command_buffer sets them dynamically)
+        VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dynamicState = {};
+        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamicState.dynamicStateCount = 2;
+        dynamicState.pDynamicStates = dynamicStates;
+        
+        VkPipelineViewportStateCreateInfo viewportState = {};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;  // Count required, but viewport is dynamic
+        viewportState.scissorCount = 1;   // Count required, but scissor is dynamic
+        
+        VkPipelineRasterizationStateCreateInfo rasterizer = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, nullptr, 0, VK_FALSE, VK_FALSE, VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_FALSE, 0, 0, 0, 1.0f};
+        VkPipelineMultisampleStateCreateInfo multisample = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr, 0, VK_SAMPLE_COUNT_1_BIT, VK_FALSE, 1.0f, nullptr, VK_FALSE, VK_FALSE};
+        VkPipelineDepthStencilStateCreateInfo depthStencil = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, nullptr, 0, VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS, VK_FALSE, VK_FALSE, {}, {}, 0, 0};
+        VkPipelineColorBlendAttachmentState colorBlend = {VK_FALSE, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, 0xF};
+        VkPipelineColorBlendStateCreateInfo colorBlending = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, nullptr, 0, VK_FALSE, VK_LOGIC_OP_COPY, 1, &colorBlend, {0,0,0,0}};
+        
+        VkGraphicsPipelineCreateInfo pipelineInfo = {};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = stages;
+        pipelineInfo.pVertexInputState = &vertexInput;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisample;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;  // Add dynamic state
+        pipelineInfo.layout = g_objMeshPipelineLayout;
+        pipelineInfo.renderPass = g_renderPass;
+        pipelineInfo.subpass = 0;
+        
+        if (vkCreateGraphicsPipelines(g_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_objMeshPipeline) != VK_SUCCESS) {
+            std::cerr << "[HDM] ERROR: Failed to create graphics pipeline!" << std::endl;
+            // Cleanup on failure
+            if (g_objMeshDescriptorPool != VK_NULL_HANDLE) {
+                vkDestroyDescriptorPool(g_device, g_objMeshDescriptorPool, nullptr);
+                g_objMeshDescriptorPool = VK_NULL_HANDLE;
+            }
+            if (g_objMeshDummySampler != VK_NULL_HANDLE) {
+                vkDestroySampler(g_device, g_objMeshDummySampler, nullptr);
+                g_objMeshDummySampler = VK_NULL_HANDLE;
+            }
+            if (g_objMeshDummyTextureView != VK_NULL_HANDLE) {
+                vkDestroyImageView(g_device, g_objMeshDummyTextureView, nullptr);
+                g_objMeshDummyTextureView = VK_NULL_HANDLE;
+            }
+            if (g_objMeshDummyTexture != VK_NULL_HANDLE) {
+                vkDestroyImage(g_device, g_objMeshDummyTexture, nullptr);
+                g_objMeshDummyTexture = VK_NULL_HANDLE;
+            }
+            if (g_objMeshDummyTextureMemory != VK_NULL_HANDLE) {
+                vkFreeMemory(g_device, g_objMeshDummyTextureMemory, nullptr);
+                g_objMeshDummyTextureMemory = VK_NULL_HANDLE;
+            }
+            if (g_objMeshUniformBuffer != VK_NULL_HANDLE) {
+                vkDestroyBuffer(g_device, g_objMeshUniformBuffer, nullptr);
+                g_objMeshUniformBuffer = VK_NULL_HANDLE;
+            }
+            if (g_objMeshUniformBufferMemory != VK_NULL_HANDLE) {
+                vkFreeMemory(g_device, g_objMeshUniformBufferMemory, nullptr);
+                g_objMeshUniformBufferMemory = VK_NULL_HANDLE;
+            }
+            if (g_objMeshPipelineLayout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(g_device, g_objMeshPipelineLayout, nullptr);
+                g_objMeshPipelineLayout = VK_NULL_HANDLE;
+            }
+            if (g_objMeshDescriptorSetLayout != VK_NULL_HANDLE) {
+                vkDestroyDescriptorSetLayout(g_device, g_objMeshDescriptorSetLayout, nullptr);
+                g_objMeshDescriptorSetLayout = VK_NULL_HANDLE;
+            }
+            if (g_objMeshFragShaderModule != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
+                g_objMeshFragShaderModule = VK_NULL_HANDLE;
+            }
+            if (g_objMeshVertShaderModule != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+                g_objMeshVertShaderModule = VK_NULL_HANDLE;
+            }
+            g_objMeshResource.reset();
+            return false;
+        }
+        
+        std::cout << "[HDM] Pipeline initialized successfully!" << std::endl;
+    }
+    
+    // Create texture from packed RGBA data if available
+    if (tex.width > 0 && tex.height > 0 && !tex.data.empty()) {
+        std::cout << "[HDM] Creating texture from packed data: " << tex.width << "x" << tex.height << std::endl;
+        
+        // Clean up dummy texture if it exists
+        if (g_objMeshDummyTexture != VK_NULL_HANDLE) {
+            if (g_objMeshDummyTextureView != VK_NULL_HANDLE) {
+                vkDestroyImageView(g_device, g_objMeshDummyTextureView, nullptr);
+                g_objMeshDummyTextureView = VK_NULL_HANDLE;
+            }
+            if (g_objMeshDummySampler != VK_NULL_HANDLE) {
+                vkDestroySampler(g_device, g_objMeshDummySampler, nullptr);
+                g_objMeshDummySampler = VK_NULL_HANDLE;
+            }
+            vkDestroyImage(g_device, g_objMeshDummyTexture, nullptr);
+            g_objMeshDummyTexture = VK_NULL_HANDLE;
+            vkFreeMemory(g_device, g_objMeshDummyTextureMemory, nullptr);
+            g_objMeshDummyTextureMemory = VK_NULL_HANDLE;
+        }
+        
+        // Create image
+        createImage(tex.width, tex.height, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    g_objMeshDummyTexture, g_objMeshDummyTextureMemory);
+        
+        // Upload texture data
+        VkCommandBuffer cmdBuf = beginSingleTimeCommands();
+        
+        // Transition to transfer destination
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = g_objMeshDummyTexture;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+        
+        // Create staging buffer
+        VkDeviceSize imageSize = tex.width * tex.height * 4;
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     stagingBuffer, stagingBufferMemory);
+        
+        // Copy texture data to staging buffer
+        void* data;
+        vkMapMemory(g_device, stagingBufferMemory, 0, imageSize, 0, &data);
+        memcpy(data, tex.data.data(), imageSize);
+        vkUnmapMemory(g_device, stagingBufferMemory);
+        
+        // Copy buffer to image
+        VkBufferImageCopy region = {};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel = 0;
+        region.imageSubresource.baseArrayLayer = 0;
+        region.imageSubresource.layerCount = 1;
+        region.imageOffset = {0, 0, 0};
+        region.imageExtent = {tex.width, tex.height, 1};
+        vkCmdCopyBufferToImage(cmdBuf, stagingBuffer, g_objMeshDummyTexture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        
+        // Transition to shader read
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+        
+        endSingleTimeCommands(cmdBuf);
+        
+        // Clean up staging buffer
+        vkDestroyBuffer(g_device, stagingBuffer, nullptr);
+        vkFreeMemory(g_device, stagingBufferMemory, nullptr);
+        
+        // Create image view
+        VkImageViewCreateInfo viewInfo = {};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = g_objMeshDummyTexture;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        if (vkCreateImageView(g_device, &viewInfo, nullptr, &g_objMeshDummyTextureView) != VK_SUCCESS) {
+            std::cerr << "[HDM] ERROR: Failed to create texture image view!" << std::endl;
+        }
+        
+        // Create sampler (if not already created)
+        if (g_objMeshDummySampler == VK_NULL_HANDLE) {
+            VkSamplerCreateInfo samplerInfo = {};
+            samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+            samplerInfo.magFilter = VK_FILTER_LINEAR;
+            samplerInfo.minFilter = VK_FILTER_LINEAR;
+            samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            if (vkCreateSampler(g_device, &samplerInfo, nullptr, &g_objMeshDummySampler) != VK_SUCCESS) {
+                std::cerr << "[HDM] ERROR: Failed to create texture sampler!" << std::endl;
+            }
+        }
+        
+        // Update descriptor set with new texture
+        VkDescriptorImageInfo imageInfo = {g_objMeshDummySampler, g_objMeshDummyTextureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet write = {};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = g_objMeshDescriptorSet;
+        write.dstBinding = 1;
+        write.dstArrayElement = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &imageInfo;
+        vkUpdateDescriptorSets(g_device, 1, &write, 0, nullptr);
+        
+        std::cout << "[HDM] Texture created successfully from packed data!" << std::endl;
+    } else {
+        std::cout << "[HDM] No texture data in HDM file - using default white texture" << std::endl;
+    }
+    
+    g_objMeshInitialized = true;
+    std::cout << "[HDM] Mesh created from packed data!" << std::endl;
+    return true;
+}
+
+// HDM JSON Save/Load Functions (legacy, for backwards compatibility)
+static bool hdm_save_json(const char* filepath, const HDMProperties& props) {
+    std::ofstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "[ESE] Failed to open file for writing: " << filepath << std::endl;
+        return false;
+    }
+    
+    file << "{\n";
+    file << "  \"hdm_version\": \"" << props.hdm_version << "\",\n";
+    file << "  \n";
+    file << "  \"model\": {\n";
+    file << "    \"obj_path\": \"" << props.model.obj_path << "\",\n";
+    file << "    \"texture_path\": \"" << props.model.texture_path << "\",\n";
+    file << "    \"scale\": [" << props.model.scale[0] << ", " << props.model.scale[1] << ", " << props.model.scale[2] << "],\n";
+    file << "    \"origin_offset\": [" << props.model.origin_offset[0] << ", " << props.model.origin_offset[1] << ", " << props.model.origin_offset[2] << "]\n";
+    file << "  },\n";
+    file << "  \n";
+    file << "  \"item_properties\": {\n";
+    file << "    \"item_type_id\": " << props.item.item_type_id << ",\n";
+    file << "    \"item_name\": \"" << props.item.item_name << "\",\n";
+    file << "    \"trade_value\": " << props.item.trade_value << ",\n";
+    file << "    \"condition\": " << props.item.condition << ",\n";
+    file << "    \"weight\": " << props.item.weight << ",\n";
+    file << "    \"category\": " << props.item.category << ",\n";
+    file << "    \"is_salvaged\": " << (props.item.is_salvaged ? "true" : "false") << "\n";
+    file << "  },\n";
+    file << "  \n";
+    file << "  \"physics\": {\n";
+    file << "    \"collision_type\": " << props.physics.collision_type << ",\n";
+    file << "    \"collision_bounds\": [" << props.physics.collision_bounds[0] << ", " << props.physics.collision_bounds[1] << ", " << props.physics.collision_bounds[2] << "],\n";
+    file << "    \"is_static\": " << (props.physics.is_static ? "true" : "false") << ",\n";
+    file << "    \"mass\": " << props.physics.mass << "\n";
+    file << "  },\n";
+    file << "  \n";
+    file << "  \"control_points\": [\n";
+    for (int i = 0; i < props.num_control_points; i++) {
+        file << "    {\"name\": \"" << props.control_points[i].name << "\", \"position\": [" 
+             << props.control_points[i].position[0] << ", " 
+             << props.control_points[i].position[1] << ", " 
+             << props.control_points[i].position[2] << "]}";
+        if (i < props.num_control_points - 1) file << ",";
+        file << "\n";
+    }
+    file << "  ]\n";
+    file << "}\n";
+    
+    file.close();
+    std::cout << "[ESE] Saved HDM file: " << filepath << std::endl;
+    return true;
+}
+
+// Simple JSON parser helper - find value after key
+static std::string json_get_string(const std::string& json, const std::string& key) {
+    size_t pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return "";
+    pos = json.find(":", pos);
+    if (pos == std::string::npos) return "";
+    pos = json.find("\"", pos);
+    if (pos == std::string::npos) return "";
+    size_t end = json.find("\"", pos + 1);
+    if (end == std::string::npos) return "";
+    return json.substr(pos + 1, end - pos - 1);
+}
+
+static int json_get_int(const std::string& json, const std::string& key) {
+    size_t pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return 0;
+    pos = json.find(":", pos);
+    if (pos == std::string::npos) return 0;
+    // Skip whitespace
+    while (pos < json.size() && (json[pos] == ':' || json[pos] == ' ' || json[pos] == '\t')) pos++;
+    return std::atoi(json.c_str() + pos);
+}
+
+static float json_get_float(const std::string& json, const std::string& key) {
+    size_t pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return 0.0f;
+    pos = json.find(":", pos);
+    if (pos == std::string::npos) return 0.0f;
+    // Skip whitespace
+    while (pos < json.size() && (json[pos] == ':' || json[pos] == ' ' || json[pos] == '\t')) pos++;
+    return (float)std::atof(json.c_str() + pos);
+}
+
+static bool json_get_bool(const std::string& json, const std::string& key) {
+    size_t pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return false;
+    pos = json.find(":", pos);
+    if (pos == std::string::npos) return false;
+    return json.find("true", pos) < json.find(",", pos);
+}
+
+static bool hdm_load_json(const char* filepath, HDMProperties& props) {
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "[ESE] Failed to open HDM file: " << filepath << std::endl;
+        return false;
+    }
+    
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string json = buffer.str();
+    file.close();
+    
+    // Parse JSON (simple parser)
+    std::string ver = json_get_string(json, "hdm_version");
+    if (!ver.empty()) strncpy(props.hdm_version, ver.c_str(), sizeof(props.hdm_version) - 1);
+    
+    // Model properties
+    std::string obj = json_get_string(json, "obj_path");
+    if (!obj.empty()) strncpy(props.model.obj_path, obj.c_str(), sizeof(props.model.obj_path) - 1);
+    std::string tex = json_get_string(json, "texture_path");
+    if (!tex.empty()) strncpy(props.model.texture_path, tex.c_str(), sizeof(props.model.texture_path) - 1);
+    
+    // Item properties
+    props.item.item_type_id = json_get_int(json, "item_type_id");
+    std::string name = json_get_string(json, "item_name");
+    if (!name.empty()) strncpy(props.item.item_name, name.c_str(), sizeof(props.item.item_name) - 1);
+    props.item.trade_value = json_get_int(json, "trade_value");
+    props.item.condition = json_get_float(json, "condition");
+    props.item.weight = json_get_float(json, "weight");
+    props.item.category = json_get_int(json, "category");
+    props.item.is_salvaged = json_get_bool(json, "is_salvaged");
+    
+    // Physics properties
+    props.physics.collision_type = json_get_int(json, "collision_type");
+    props.physics.is_static = json_get_bool(json, "is_static");
+    props.physics.mass = json_get_float(json, "mass");
+    
+    std::cout << "[ESE] Loaded HDM file: " << filepath << std::endl;
+    return true;
+}
+
+// Initialize ESE with default properties
+static void hdm_init_default_properties(HDMProperties& props) {
+    memset(&props, 0, sizeof(props));
+    strncpy(props.hdm_version, "1.0", sizeof(props.hdm_version) - 1);
+    strncpy(props.item.item_name, "Unnamed", sizeof(props.item.item_name) - 1);
+    props.item.condition = 1.0f;
+    props.item.weight = 1.0f;
+    props.model.scale[0] = props.model.scale[1] = props.model.scale[2] = 1.0f;
+    props.physics.collision_type = 1;
+    props.physics.collision_bounds[0] = props.physics.collision_bounds[1] = props.physics.collision_bounds[2] = 1.0f;
+    props.physics.is_static = true;
+    props.physics.mass = 1.0f;
+}
+
+// Initialize ESE renderer with ImGui support
+extern "C" int heidic_init_ese(GLFWwindow* window) {
+    if (!window) {
+        std::cerr << "[ESE] ERROR: Invalid window!" << std::endl;
+        return 0;
+    }
+    
+    std::cout << "[ESE] Initializing Echo Synapse Editor..." << std::endl;
+    
+    // Initialize default HDM properties
+    hdm_init_default_properties(g_eseHdmProperties);
+    
+    // Initialize base Vulkan (reuse existing infrastructure)
+    if (!heidic_init_renderer(window)) {
+        std::cerr << "[ESE] Failed to initialize Vulkan renderer!" << std::endl;
+        return 0;
+    }
+    
+#ifdef USE_IMGUI
+    // Initialize ImGui
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    
+    // Setup ImGui style
+    ImGui::StyleColorsDark();
+    
+    // Initialize ImGui for GLFW
+    ImGui_ImplGlfw_InitForVulkan(window, true);
+    
+    // Create descriptor pool for ImGui
+    VkDescriptorPoolSize pool_sizes[] = {
+        { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
+    };
+    
+    VkDescriptorPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pool_info.maxSets = 1000;
+    pool_info.poolSizeCount = std::size(pool_sizes);
+    pool_info.pPoolSizes = pool_sizes;
+    
+    if (vkCreateDescriptorPool(g_device, &pool_info, nullptr, &g_eseImguiDescriptorPool) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to create ImGui descriptor pool!" << std::endl;
+        return 0;
+    }
+    
+    // Initialize ImGui Vulkan
+    ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.ApiVersion = VK_API_VERSION_1_0;
+    init_info.Instance = g_instance;
+    init_info.PhysicalDevice = g_physicalDevice;
+    init_info.Device = g_device;
+    init_info.QueueFamily = 0; // We use graphics queue family 0
+    init_info.Queue = g_graphicsQueue;
+    init_info.DescriptorPool = g_eseImguiDescriptorPool;
+    init_info.MinImageCount = 2;
+    init_info.ImageCount = static_cast<uint32_t>(g_swapchainImages.size());
+    
+    // Set pipeline info for render pass (newer ImGui 2025+ API)
+    init_info.PipelineInfoMain.RenderPass = g_renderPass;
+    init_info.PipelineInfoMain.Subpass = 0;
+    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init_info.UseDynamicRendering = false;
+    
+    ImGui_ImplVulkan_Init(&init_info);
+    
+    // In newer ImGui, fonts are uploaded automatically by ImGui_ImplVulkan_Init
+    
+    g_eseImguiInitialized = true;
+    std::cout << "[ESE] ImGui initialized!" << std::endl;
+#else
+    std::cout << "[ESE] WARNING: ImGui not available (USE_IMGUI not defined)" << std::endl;
+#endif
+    
+    g_eseInitialized = true;
+    std::cout << "[ESE] Echo Synapse Editor initialized!" << std::endl;
+    return 1;
+}
+
+// ESE render function with ImGui menu bar
+extern "C" void heidic_render_ese(GLFWwindow* window) {
+    if (!g_eseInitialized) return;
+    
+#ifdef USE_IMGUI
+    // Start ImGui frame
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+    
+    // Create main menu bar
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("New HDM", "Ctrl+N")) {
+                hdm_init_default_properties(g_eseHdmProperties);
+                g_esePropertiesModified = true;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Open HDM...", "Ctrl+Shift+O")) {
+                g_eseOpenHdmDialog = true;
+            }
+            if (ImGui::MenuItem("Save HDM...", "Ctrl+S", false, g_eseModelLoaded)) {
+                g_eseSaveHdmDialog = true;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Import OBJ...", "Ctrl+O")) {
+                g_eseOpenObjDialog = true;
+            }
+            if (ImGui::MenuItem("Import Texture...", "Ctrl+T")) {
+                g_eseOpenTextureDialog = true;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Exit", "Esc")) {
+                glfwSetWindowShouldClose(window, 1);
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("Wireframe", nullptr, false, false);
+            ImGui::MenuItem("Normals", nullptr, false, false);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Help")) {
+            if (ImGui::MenuItem("About ESE")) {
+                // Show about dialog
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
+    
+    // Model Info Panel
+    ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(320, 200), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Model Info")) {
+        if (g_eseModelLoaded) {
+            ImGui::Text("OBJ: %s", g_eseCurrentObjPath.c_str());
+            ImGui::Text("Texture: %s", g_eseCurrentTexturePath.empty() ? "(none)" : g_eseCurrentTexturePath.c_str());
+            ImGui::Separator();
+            ImGui::Text("Scale:");
+            if (ImGui::DragFloat3("##scale", g_eseHdmProperties.model.scale, 0.01f, 0.01f, 100.0f)) {
+                g_esePropertiesModified = true;
+            }
+            ImGui::Text("Origin Offset:");
+            if (ImGui::DragFloat3("##origin", g_eseHdmProperties.model.origin_offset, 0.1f, -100.0f, 100.0f)) {
+                g_esePropertiesModified = true;
+            }
+        } else {
+            ImGui::Text("No model loaded.");
+            ImGui::Text("Use File > Import OBJ to load.");
+        }
+    }
+    ImGui::End();
+    
+    // Item Properties Panel
+    ImGui::SetNextWindowPos(ImVec2(10, 240), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(320, 280), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Item Properties")) {
+        ImGui::Text("Item Type ID:");
+        if (ImGui::InputInt("##type_id", &g_eseHdmProperties.item.item_type_id)) {
+            g_esePropertiesModified = true;
+        }
+        
+        ImGui::Text("Name:");
+        if (ImGui::InputText("##name", g_eseHdmProperties.item.item_name, sizeof(g_eseHdmProperties.item.item_name))) {
+            g_esePropertiesModified = true;
+        }
+        
+        ImGui::Text("Category:");
+        if (ImGui::Combo("##category", &g_eseHdmProperties.item.category, g_categoryNames, IM_ARRAYSIZE(g_categoryNames))) {
+            g_esePropertiesModified = true;
+        }
+        
+        ImGui::Separator();
+        
+        ImGui::Text("Trade Value:");
+        if (ImGui::InputInt("##trade", &g_eseHdmProperties.item.trade_value)) {
+            g_esePropertiesModified = true;
+        }
+        
+        ImGui::Text("Condition (0.0 - 1.0):");
+        if (ImGui::SliderFloat("##condition", &g_eseHdmProperties.item.condition, 0.0f, 1.0f)) {
+            g_esePropertiesModified = true;
+        }
+        
+        ImGui::Text("Weight:");
+        if (ImGui::DragFloat("##weight", &g_eseHdmProperties.item.weight, 0.1f, 0.0f, 1000.0f)) {
+            g_esePropertiesModified = true;
+        }
+        
+        if (ImGui::Checkbox("Is Salvaged", &g_eseHdmProperties.item.is_salvaged)) {
+            g_esePropertiesModified = true;
+        }
+    }
+    ImGui::End();
+    
+    // Physics Properties Panel
+    ImGui::SetNextWindowPos(ImVec2(10, 530), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(320, 180), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Physics")) {
+        const char* collisionTypes[] = { "None", "Box", "Mesh" };
+        ImGui::Text("Collision Type:");
+        if (ImGui::Combo("##collision", &g_eseHdmProperties.physics.collision_type, collisionTypes, IM_ARRAYSIZE(collisionTypes))) {
+            g_esePropertiesModified = true;
+        }
+        
+        if (g_eseHdmProperties.physics.collision_type == 1) {
+            ImGui::Text("Collision Bounds:");
+            if (ImGui::DragFloat3("##bounds", g_eseHdmProperties.physics.collision_bounds, 0.1f, 0.1f, 100.0f)) {
+                g_esePropertiesModified = true;
+            }
+        }
+        
+        if (ImGui::Checkbox("Is Static", &g_eseHdmProperties.physics.is_static)) {
+            g_esePropertiesModified = true;
+        }
+        
+        if (!g_eseHdmProperties.physics.is_static) {
+            ImGui::Text("Mass:");
+            if (ImGui::DragFloat("##mass", &g_eseHdmProperties.physics.mass, 0.1f, 0.1f, 10000.0f)) {
+                g_esePropertiesModified = true;
+            }
+        }
+    }
+    ImGui::End();
+    
+    // Status bar
+    if (g_esePropertiesModified) {
+        ImGui::SetNextWindowPos(ImVec2(10, (float)g_swapchainExtent.height - 30), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(200, 25), ImGuiCond_Always);
+        ImGui::Begin("##status", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "* Unsaved changes");
+        ImGui::End();
+    }
+    
+    // Handle file dialogs (after ImGui frame ends to avoid blocking)
+    static bool pendingObjDialog = false;
+    static bool pendingTextureDialog = false;
+    static bool pendingOpenHdmDialog = false;
+    static bool pendingSaveHdmDialog = false;
+    
+    if (g_eseOpenObjDialog) {
+        g_eseOpenObjDialog = false;
+        pendingObjDialog = true;
+    }
+    
+    if (g_eseOpenTextureDialog) {
+        g_eseOpenTextureDialog = false;
+        pendingTextureDialog = true;
+    }
+    
+    if (g_eseOpenHdmDialog) {
+        g_eseOpenHdmDialog = false;
+        pendingOpenHdmDialog = true;
+    }
+    
+    if (g_eseSaveHdmDialog) {
+        g_eseSaveHdmDialog = false;
+        pendingSaveHdmDialog = true;
+    }
+    
+    // Finalize ImGui frame
+    ImGui::Render();
+#endif
+    
+    // Wait for previous frame to complete BEFORE acquiring next image
+    vkWaitForFences(g_device, 1, &g_inFlightFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(g_device, 1, &g_inFlightFence);
+    
+    // Acquire swapchain image
+    uint32_t imageIndex;
+    VkResult result = vkAcquireNextImageKHR(g_device, g_swapchain, UINT64_MAX, 
+                                            g_imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        return; // Swapchain needs recreation
+    }
+    
+    // Reset and begin command buffer
+    vkResetCommandBuffer(g_commandBuffers[imageIndex], 0);
+    
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    vkBeginCommandBuffer(g_commandBuffers[imageIndex], &beginInfo);
+    
+    // Begin render pass
+    VkRenderPassBeginInfo renderPassInfo = {};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = g_renderPass;
+    renderPassInfo.framebuffer = g_framebuffers[imageIndex];
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = g_swapchainExtent;
+    
+    std::array<VkClearValue, 2> clearValues = {};
+    clearValues[0].color = {{0.1f, 0.1f, 0.15f, 1.0f}};  // Dark blue-gray background
+    clearValues[1].depthStencil = {1.0f, 0};
+    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+    renderPassInfo.pClearValues = clearValues.data();
+    
+    vkCmdBeginRenderPass(g_commandBuffers[imageIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+    
+    // Render 3D model if loaded
+    // Only render if we have proper mesh shaders (not the fallback 3D shaders)
+    // The 3D shaders don't match MeshVertex format and will cause validation errors
+    if (g_eseModelLoaded && g_objMeshInitialized && g_objMeshPipeline != VK_NULL_HANDLE) {
+        // Check if we're using mesh shaders (by checking if mesh.vert.spv was loaded)
+        // For now, just try to render - the validation errors will warn us but won't crash
+        render_obj_mesh_to_command_buffer(g_commandBuffers[imageIndex]);
+    }
+    
+#ifdef USE_IMGUI
+    // Record ImGui draw commands into the command buffer (on top of 3D scene)
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), g_commandBuffers[imageIndex]);
+#endif
+    
+    vkCmdEndRenderPass(g_commandBuffers[imageIndex]);
+    vkEndCommandBuffer(g_commandBuffers[imageIndex]);
+    
+    // Submit command buffer
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    
+    VkSemaphore waitSemaphores[] = {g_imageAvailableSemaphore};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &g_commandBuffers[imageIndex];
+    
+    VkSemaphore signalSemaphores[] = {g_renderFinishedSemaphore};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+    
+    vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, g_inFlightFence);
+    
+    // Present
+    VkPresentInfoKHR presentInfo = {};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+    
+    VkSwapchainKHR swapChains[] = {g_swapchain};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &imageIndex;
+    
+    vkQueuePresentKHR(g_graphicsQueue, &presentInfo);
+    
+#ifdef USE_IMGUI
+    // Handle file dialogs after render (so they don't block the frame)
+    if (pendingObjDialog) {
+        pendingObjDialog = false;
+        const char* path = nfd_open_obj_dialog();
+        if (path && strlen(path) > 0) {
+            g_eseCurrentObjPath = path;
+            strncpy(g_eseHdmProperties.model.obj_path, path, sizeof(g_eseHdmProperties.model.obj_path) - 1);
+            std::cout << "[ESE] Selected OBJ: " << path << std::endl;
+            // Wait for GPU to finish any pending work
+            vkDeviceWaitIdle(g_device);
+            // Clean up old mesh if any
+            if (g_eseModelLoaded) {
+                heidic_cleanup_renderer_obj_mesh();
+                g_eseModelLoaded = false;
+            }
+            // Load model (use texture if set, otherwise use empty string for default)
+            if (heidic_init_renderer_obj_mesh(window, g_eseCurrentObjPath.c_str(), 
+                    g_eseCurrentTexturePath.empty() ? "" : g_eseCurrentTexturePath.c_str())) {
+                g_eseModelLoaded = true;
+                g_esePropertiesModified = true;
+                std::cout << "[ESE] Model loaded!" << std::endl;
+            } else {
+                std::cerr << "[ESE] Failed to load model!" << std::endl;
+            }
+        }
+    }
+    
+    if (pendingTextureDialog) {
+        pendingTextureDialog = false;
+        const char* path = nfd_open_texture_dialog();
+        if (path && strlen(path) > 0) {
+            g_eseCurrentTexturePath = path;
+            strncpy(g_eseHdmProperties.model.texture_path, path, sizeof(g_eseHdmProperties.model.texture_path) - 1);
+            std::cout << "[ESE] Selected texture: " << path << std::endl;
+            // Wait for GPU to finish any pending work
+            vkDeviceWaitIdle(g_device);
+            // Clean up old mesh if any
+            if (g_eseModelLoaded) {
+                heidic_cleanup_renderer_obj_mesh();
+                g_eseModelLoaded = false;
+            }
+            // Reload model with new texture (only if OBJ is set)
+            if (!g_eseCurrentObjPath.empty()) {
+                if (heidic_init_renderer_obj_mesh(window, g_eseCurrentObjPath.c_str(), g_eseCurrentTexturePath.c_str())) {
+                    g_eseModelLoaded = true;
+                    g_esePropertiesModified = true;
+                    std::cout << "[ESE] Model reloaded with texture!" << std::endl;
+                } else {
+                    std::cerr << "[ESE] Failed to reload model with texture!" << std::endl;
+                }
+            }
+        }
+    }
+    
+    // Handle Open HDM dialog
+    if (pendingOpenHdmDialog) {
+        pendingOpenHdmDialog = false;
+        const char* path = nfd_open_file_dialog("HDM Files\0*.hdm;*.hdma\0HDM Binary\0*.hdm\0HDM ASCII\0*.hdma\0All Files\0*.*\0", NULL);
+        if (path && strlen(path) > 0) {
+            std::cout << "[ESE] Opening HDM: " << path << std::endl;
+            
+            vkDeviceWaitIdle(g_device);
+            if (g_eseModelLoaded) {
+                heidic_cleanup_renderer_obj_mesh();
+                g_eseModelLoaded = false;
+            }
+            
+            // Clear packed data
+            g_esePackedGeometry.vertices.clear();
+            g_esePackedGeometry.indices.clear();
+            g_esePackedTexture.data.clear();
+            g_eseGeometryPacked = false;
+            g_eseTexturePacked = false;
+            
+            // Determine format from extension
+            std::string filepath(path);
+            bool isAscii = (filepath.length() >= 5 && filepath.substr(filepath.length() - 5) == ".hdma");
+            
+            // Load HDM (binary or ASCII)
+            bool loaded = false;
+            if (isAscii) {
+                std::cout << "[ESE] Loading ASCII HDM format..." << std::endl;
+                loaded = hdm_load_ascii(path, g_eseHdmProperties, g_esePackedGeometry, g_esePackedTexture);
+            } else {
+                std::cout << "[ESE] Loading binary HDM format..." << std::endl;
+                loaded = hdm_load_binary(path, g_eseHdmProperties, g_esePackedGeometry, g_esePackedTexture);
+            }
+            
+            if (loaded) {
+                g_eseGeometryPacked = !g_esePackedGeometry.vertices.empty();
+                g_eseTexturePacked = !g_esePackedTexture.data.empty();
+                g_eseCurrentObjPath = g_eseHdmProperties.model.obj_path;
+                g_eseCurrentTexturePath = g_eseHdmProperties.model.texture_path;
+                
+                // Create mesh from packed data (with texture support)
+                if (g_eseGeometryPacked && hdm_create_mesh_from_packed(window, g_esePackedGeometry, g_esePackedTexture)) {
+                    g_eseModelLoaded = true;
+                    g_esePropertiesModified = false;
+                    std::cout << "[ESE] Binary HDM loaded successfully!" << std::endl;
+                } else {
+                    std::cerr << "[ESE] Failed to create mesh from packed data!" << std::endl;
+                }
+            }
+            
+            // Fallback: try legacy JSON format
+            if (!loaded && hdm_load_json(path, g_eseHdmProperties)) {
+                // Load the OBJ model referenced in HDM
+                if (strlen(g_eseHdmProperties.model.obj_path) > 0) {
+                    g_eseCurrentObjPath = g_eseHdmProperties.model.obj_path;
+                    g_eseCurrentTexturePath = g_eseHdmProperties.model.texture_path;
+                    
+                    if (heidic_init_renderer_obj_mesh(window, g_eseCurrentObjPath.c_str(), 
+                            g_eseCurrentTexturePath.empty() ? "" : g_eseCurrentTexturePath.c_str())) {
+                        g_eseModelLoaded = true;
+                        g_esePropertiesModified = true;  // Mark as modified so user can re-save in new format
+                        std::cout << "[ESE] Legacy HDM loaded - please re-save to convert to binary format!" << std::endl;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Handle Save HDM dialog
+    if (pendingSaveHdmDialog) {
+        pendingSaveHdmDialog = false;
+        
+        // First, extract geometry and texture if not already done
+        if (!g_eseGeometryPacked && g_objMeshResource) {
+            if (hdm_extract_geometry_from_mesh(g_esePackedGeometry)) {
+                g_eseGeometryPacked = true;
+            }
+        }
+        
+        if (!g_eseTexturePacked && !g_eseCurrentTexturePath.empty()) {
+            if (hdm_load_texture_data(g_eseCurrentTexturePath.c_str(), g_esePackedTexture)) {
+                g_eseTexturePacked = true;
+            }
+        }
+        
+        if (!g_eseGeometryPacked) {
+            std::cerr << "[ESE] Cannot save HDM: No geometry loaded!" << std::endl;
+        } else {
+            // Use save dialog
+            OPENFILENAMEA ofn;
+            char szFile[260] = {0};
+            
+            // Suggest filename based on item name
+            strncpy(szFile, g_eseHdmProperties.item.item_name, sizeof(szFile) - 5);
+            strcat(szFile, ".hdm");
+            
+            ZeroMemory(&ofn, sizeof(ofn));
+            ofn.lStructSize = sizeof(ofn);
+            ofn.lpstrFile = szFile;
+            ofn.nMaxFile = sizeof(szFile);
+            ofn.lpstrFilter = "HDM Binary\0*.hdm\0HDM ASCII\0*.hdma\0All Files\0*.*\0";
+            ofn.nFilterIndex = 1;
+            ofn.lpstrDefExt = "hdm";
+            ofn.Flags = OFN_OVERWRITEPROMPT;
+            
+            if (GetSaveFileNameA(&ofn) == TRUE) {
+                // Update paths in properties (for reference)
+                strncpy(g_eseHdmProperties.model.obj_path, g_eseCurrentObjPath.c_str(), sizeof(g_eseHdmProperties.model.obj_path) - 1);
+                strncpy(g_eseHdmProperties.model.texture_path, g_eseCurrentTexturePath.c_str(), sizeof(g_eseHdmProperties.model.texture_path) - 1);
+                strncpy(g_eseHdmProperties.hdm_version, "2.0", sizeof(g_eseHdmProperties.hdm_version) - 1);
+                
+                // Determine format from file extension or filter index
+                std::string filepath(szFile);
+                bool isAscii = false;
+                if (filepath.length() >= 5 && filepath.substr(filepath.length() - 5) == ".hdma") {
+                    isAscii = true;
+                } else if (ofn.nFilterIndex == 2) {
+                    // User selected ASCII format - change extension
+                    if (filepath.length() >= 4 && filepath.substr(filepath.length() - 4) == ".hdm") {
+                        filepath = filepath.substr(0, filepath.length() - 4) + ".hdma";
+                        strncpy(szFile, filepath.c_str(), sizeof(szFile) - 1);
+                    }
+                    isAscii = true;
+                }
+                
+                // Save in appropriate format
+                bool success = false;
+                if (isAscii) {
+                    success = hdm_save_ascii(szFile, g_eseHdmProperties, g_esePackedGeometry, g_esePackedTexture);
+                    if (success) {
+                        g_esePropertiesModified = false;
+                        std::cout << "[ESE] ASCII HDM saved: " << szFile << std::endl;
+                    }
+                } else {
+                    success = hdm_save_binary(szFile, g_eseHdmProperties, g_esePackedGeometry, g_esePackedTexture);
+                    if (success) {
+                        g_esePropertiesModified = false;
+                        std::cout << "[ESE] Binary HDM saved: " << szFile << std::endl;
+                    }
+                }
+            }
+        }
+    }
+#endif
+}
+
+// Cleanup ESE
+extern "C" void heidic_cleanup_ese() {
+    if (!g_eseInitialized) return;
+    
+    std::cout << "[ESE] Cleaning up..." << std::endl;
+    
+    // Wait for GPU to finish all work before cleanup
+    vkDeviceWaitIdle(g_device);
+    
+#ifdef USE_IMGUI
+    if (g_eseImguiInitialized) {
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+        
+        if (g_eseImguiDescriptorPool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(g_device, g_eseImguiDescriptorPool, nullptr);
+            g_eseImguiDescriptorPool = VK_NULL_HANDLE;
+        }
+        g_eseImguiInitialized = false;
+    }
+#endif
+    
+    if (g_eseModelLoaded) {
+        heidic_cleanup_renderer_obj_mesh();
+        g_eseModelLoaded = false;
+    }
+    
+    heidic_cleanup_renderer();
+    g_eseInitialized = false;
+    
+    std::cout << "[ESE] Cleanup complete." << std::endl;
+}
+
+// ============================================================================
+// HDM Loader functions for games (C-style API)
+// ============================================================================
+
+static HDMProperties g_loadedHdmProperties;  // Properties from last loaded HDM
+
+extern "C" int hdm_load_file(const char* filepath) {
+    hdm_init_default_properties(g_loadedHdmProperties);
+    return hdm_load_json(filepath, g_loadedHdmProperties) ? 1 : 0;
+}
+
+extern "C" HDMItemPropertiesC hdm_get_item_properties() {
+    HDMItemPropertiesC result;
+    result.item_type_id = g_loadedHdmProperties.item.item_type_id;
+    strncpy(result.item_name, g_loadedHdmProperties.item.item_name, sizeof(result.item_name) - 1);
+    result.trade_value = g_loadedHdmProperties.item.trade_value;
+    result.condition = g_loadedHdmProperties.item.condition;
+    result.weight = g_loadedHdmProperties.item.weight;
+    result.category = g_loadedHdmProperties.item.category;
+    result.is_salvaged = g_loadedHdmProperties.item.is_salvaged ? 1 : 0;
+    return result;
+}
+
+extern "C" HDMPhysicsPropertiesC hdm_get_physics_properties() {
+    HDMPhysicsPropertiesC result;
+    result.collision_type = g_loadedHdmProperties.physics.collision_type;
+    result.collision_bounds_x = g_loadedHdmProperties.physics.collision_bounds[0];
+    result.collision_bounds_y = g_loadedHdmProperties.physics.collision_bounds[1];
+    result.collision_bounds_z = g_loadedHdmProperties.physics.collision_bounds[2];
+    result.is_static = g_loadedHdmProperties.physics.is_static ? 1 : 0;
+    result.mass = g_loadedHdmProperties.physics.mass;
+    return result;
+}
+
+extern "C" HDMModelPropertiesC hdm_get_model_properties() {
+    HDMModelPropertiesC result;
+    strncpy(result.obj_path, g_loadedHdmProperties.model.obj_path, sizeof(result.obj_path) - 1);
+    strncpy(result.texture_path, g_loadedHdmProperties.model.texture_path, sizeof(result.texture_path) - 1);
+    result.scale_x = g_loadedHdmProperties.model.scale[0];
+    result.scale_y = g_loadedHdmProperties.model.scale[1];
+    result.scale_z = g_loadedHdmProperties.model.scale[2];
+    return result;
+}
+
+// NFD (Native File Dialog) functions for ESE
+// Using Windows API for file dialogs
+#ifdef _WIN32
+#include <vector>
+
+// Helper function to convert std::string to std::wstring
+static std::wstring string_to_wstring(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
+    std::wstring wstrTo(size_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed);
+    return wstrTo;
+}
+
+// Helper function to convert std::wstring to std::string
+static std::string wstring_to_string(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+    std::string strTo(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+    return strTo;
+}
+
+// Open file dialog with filter
+extern "C" const char* nfd_open_file_dialog(const char* filterList, const char* defaultPath) {
+    static std::string result;
+    result.clear();
+    
+    OPENFILENAMEA ofn;
+    char szFile[260] = {0};
+    
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = sizeof(szFile);
+    ofn.lpstrFilter = filterList ? filterList : "All Files\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFileTitle = NULL;
+    ofn.nMaxFileTitle = 0;
+    ofn.lpstrInitialDir = defaultPath ? defaultPath : NULL;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    
+    if (GetOpenFileNameA(&ofn) == TRUE) {
+        result = szFile;
+        return result.c_str();
+    }
+    
+    return "";  // User cancelled
+}
+
+// Convenience function for OBJ files
+extern "C" const char* nfd_open_obj_dialog() {
+    return nfd_open_file_dialog("OBJ Files\0*.obj\0All Files\0*.*\0", NULL);
+}
+
+// Convenience function for texture files
+extern "C" const char* nfd_open_texture_dialog() {
+    return nfd_open_file_dialog("Image Files\0*.png;*.jpg;*.jpeg;*.dds;*.bmp\0PNG Files\0*.png\0DDS Files\0*.dds\0All Files\0*.*\0", NULL);
+}
+
+#else
+// Linux/Mac stub implementations (can be implemented with GTK or similar)
+extern "C" const char* nfd_open_file_dialog(const char* filterList, const char* defaultPath) {
+    static std::string result;
+    result.clear();
+    // TODO: Implement for Linux/Mac
+    return "";
+}
+
+extern "C" const char* nfd_open_obj_dialog() {
+    return nfd_open_file_dialog("OBJ Files\0*.obj\0All Files\0*.*\0", NULL);
+}
+
+extern "C" const char* nfd_open_texture_dialog() {
+    return nfd_open_file_dialog("Image Files\0*.png;*.jpg;*.jpeg;*.dds;*.bmp\0PNG Files\0*.png\0DDS Files\0*.dds\0All Files\0*.*\0", NULL);
+}
+#endif
 

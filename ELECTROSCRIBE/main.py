@@ -178,6 +178,7 @@ class Editor:
         self.auto_hotload_enabled = True  # Enable auto hotload by default
         self.last_hotload_time = 0  # Track last hotload time to avoid rapid-fire reloads
         self._building = False  # Flag to prevent auto-hotload during build
+        self._run_clicked = False  # Flag to track if run button was clicked
         self._just_built = False  # Flag to prevent auto-hotload immediately after build
         self._setup_file_watcher()
         self.keywords = {
@@ -1184,9 +1185,15 @@ class Editor:
                 pygame.draw.circle(surface, icon_color, (center_x, center_y - 2), 6, 2)
                 pygame.draw.line(surface, icon_color, (center_x, center_y + 4), (center_x, center_y + 8), 2)
             elif action == "run":
-                # Play triangle
-                points = [(center_x - 6, center_y - 6), (center_x - 6, center_y + 6), (center_x + 6, center_y)]
-                pygame.draw.polygon(surface, icon_color, points)
+                # Play triangle (or checkmark if clicked)
+                if self._run_clicked:
+                    # Draw checkmark
+                    pygame.draw.line(surface, (80, 255, 80), (center_x - 6, center_y), (center_x - 2, center_y + 4), 2)
+                    pygame.draw.line(surface, (80, 255, 80), (center_x - 2, center_y + 4), (center_x + 6, center_y - 4), 2)
+                else:
+                    # Play triangle
+                    points = [(center_x - 6, center_y - 6), (center_x - 6, center_y + 6), (center_x + 6, center_y)]
+                    pygame.draw.polygon(surface, icon_color, points)
             elif action == "hotload":
                 # Red arrow (right-pointing triangle in red)
                 arrow_color = (255, 80, 80) if not is_disabled else (150, 150, 150)
@@ -1712,6 +1719,7 @@ class Editor:
         ui_windows_enabled = False
         config_path = os.path.join(project_dir, ".project_config")
         neuroshell_enabled = False
+        imgui_glfw_enabled = False  # ImGui with GLFW/Vulkan (for ESE-style editors)
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r") as f:
@@ -1723,6 +1731,9 @@ class Editor:
                         elif line.startswith("enable_neuroshell="):
                             value = line.split("=", 1)[1].strip().lower()
                             neuroshell_enabled = value in ("true", "1", "yes")
+                        elif line.startswith("enable_imgui="):
+                            value = line.split("=", 1)[1].strip().lower()
+                            imgui_glfw_enabled = value in ("true", "1", "yes")
             except Exception as e:
                 self.log_lines.append(f"WARNING: Could not read project config: {e}")
         
@@ -1841,9 +1852,9 @@ class Editor:
                     else:
                         self.log_lines.append("WARNING: SDL3/SDL2 not found - UI windows may not work. Set SDL3_PATH or SDL2_PATH environment variable.")
         
-        # Add ImGui include path if UI windows are enabled
+        # Add ImGui include path if UI windows are enabled or ImGui GLFW mode
         imgui_path = None
-        if ui_windows_enabled:
+        if ui_windows_enabled or imgui_glfw_enabled:
             # Try to find ImGui (check common locations)
             imgui_path = os.environ.get("IMGUI_PATH")
             if not imgui_path:
@@ -1916,6 +1927,28 @@ class Editor:
                 else:
                     self.log_lines.append(f"WARNING: ImGui source not found: {src_path}")
         
+        # Add ImGui source files for GLFW/Vulkan mode (enable_imgui=true, without SDL)
+        elif imgui_glfw_enabled and imgui_path:
+            imgui_sources = [
+                "imgui.cpp",
+                "imgui_draw.cpp",
+                "imgui_tables.cpp",
+                "imgui_widgets.cpp",
+                "backends/imgui_impl_vulkan.cpp",
+                "backends/imgui_impl_glfw.cpp",
+            ]
+            
+            for src_file in imgui_sources:
+                src_path = os.path.join(imgui_path, src_file)
+                if os.path.exists(src_path):
+                    build_cmd.append(src_path)
+                else:
+                    self.log_lines.append(f"WARNING: ImGui source not found: {src_path}")
+            
+            # Add USE_IMGUI define
+            build_cmd.append("-DUSE_IMGUI")
+            self.log_lines.append("ImGui (GLFW/Vulkan) enabled - added USE_IMGUI flag")
+        
         # has_audio_resources was already checked above for include paths
         
         # Copy SDL3.dll to project directory if UI windows are enabled OR if we have audio resources
@@ -1964,7 +1997,7 @@ class Editor:
                     break
         
         # Add libraries to link
-        build_cmd.extend(["-lvulkan-1", "-lglfw3", "-lgdi32"])
+        build_cmd.extend(["-lvulkan-1", "-lglfw3", "-lgdi32", "-lcomdlg32"])
         
         # Add SDL3/SDL2 library path and linking if UI windows are enabled OR if we have audio resources
         # (has_audio_resources was already checked above for DLL copy)
@@ -3545,6 +3578,10 @@ fn main(): void {{
                             elif action == "save":
                                 editor.save()
                             elif action == "run":
+                                editor._run_clicked = True  # Mark run button as clicked
+                                # Force immediate redraw to show checkmark
+                                editor.draw(screen)
+                                pygame.display.flip()
                                 editor.run_commands()
                             elif action == "hotload":
                                 if editor.has_hot_systems():

@@ -1,0 +1,30 @@
+{
+  "hdm_version": "1.0",
+  
+  "model": {
+    "obj_path": "C:\Users\nitro\Desktop\PROJECTS\HEIDIC\ELECTROSCRIBE\PROJECTS\obj_test\models\eve_1.obj",
+    "texture_path": "C:\Users\nitro\Desktop\PROJECTS\HEIDIC\ELECTROSCRIBE\PROJECTS\obj_test\textures\eve_tex.png",
+    "scale": [1, 1, 1],
+    "origin_offset": [0, 0, 0]
+  },
+  
+  "item_properties": {
+    "item_type_id": 0,
+    "item_name": "Unnamed",
+    "trade_value": 0,
+    "condition": 1,
+    "weight": 1,
+    "category": 0,
+    "is_salvaged": false
+  },
+  
+  "physics": {
+    "collision_type": 1,
+    "collision_bounds": [1, 1, 1],
+    "is_static": true,
+    "mass": 1
+  },
+  
+  "control_points": [
+  ]
+}

@@ -181,6 +181,52 @@ void ui_manager_update();
 void ui_manager_render();
 void ui_manager_shutdown();
 
+// ESE (Echo Synapse Editor) functions
+int heidic_init_ese(GLFWwindow* window);
+void heidic_render_ese(GLFWwindow* window);
+void heidic_cleanup_ese();
+
+// HDM (HEIDIC Model) format functions for game loading
+// Returns item properties from loaded HDM file
+typedef struct {
+    int item_type_id;
+    char item_name[64];
+    int trade_value;
+    float condition;
+    float weight;
+    int category;
+    int is_salvaged;
+} HDMItemPropertiesC;
+
+typedef struct {
+    int collision_type;
+    float collision_bounds_x;
+    float collision_bounds_y;
+    float collision_bounds_z;
+    int is_static;
+    float mass;
+} HDMPhysicsPropertiesC;
+
+typedef struct {
+    char obj_path[256];
+    char texture_path[256];
+    float scale_x;
+    float scale_y;
+    float scale_z;
+} HDMModelPropertiesC;
+
+// Load HDM file and get properties (for use in games)
+int hdm_load_file(const char* filepath);
+HDMItemPropertiesC hdm_get_item_properties();
+HDMPhysicsPropertiesC hdm_get_physics_properties();
+HDMModelPropertiesC hdm_get_model_properties();
+
+// NFD (Native File Dialog) functions for ESE
+// Returns file path or empty string if cancelled
+const char* nfd_open_file_dialog(const char* filterList, const char* defaultPath);
+const char* nfd_open_obj_dialog();  // Convenience function for OBJ files
+const char* nfd_open_texture_dialog();  // Convenience function for texture files
+
 #ifdef __cplusplus
 }
 #endif

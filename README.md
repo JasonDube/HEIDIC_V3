@@ -1,14 +1,31 @@
-# HEIDIC v2
+# HEIDIC
 
-A clean, basic implementation of the HEIDIC language, starting from scratch with just the core language features.
+A statically-typed, compiled language designed for building high-performance game engines. HEIDIC compiles to native C++17 code for maximum performance.
 
 ## Overview
 
-HEIDIC v2 is a statically-typed, compiled language that compiles to C++. This version focuses on the basic language features without Vulkan/GLFW integration.
+HEIDIC is a programming language designed for **building game engines**, not scripting game logic. It provides zero-cost abstractions, direct integration with Vulkan and GLFW, and built-in support for Entity Component Systems (ECS). It features an integrated development environment (Electroscribe) with hot-reload capabilities, making it ideal for rapid engine development.
 
-## Features
+**Key Distinction:**
+- **HEIDIC**: A language for building game engines (rendering systems, ECS frameworks, resource managers)
+- **Not**: A scripting language for game logic (like Lua or visual scripting)
 
-### Basic Types
+HEIDIC is used to write the engine itself - the core systems that power games.
+
+## Key Features
+
+### Language Features
+
+- **Static Typing**: Full type safety with type inference
+- **Zero-Cost Abstractions**: Compiles to efficient C++ code
+- **No Garbage Collection**: Manual memory management for predictable performance
+- **ECS Support**: Built-in Entity Component System with SOA (Structure-of-Arrays) layouts
+- **Hot Reload**: Runtime code reloading for rapid iteration
+- **Direct API Access**: Native integration with Vulkan, GLFW, and ImGui
+
+### Type System
+
+#### Primitive Types
 - `i32` - 32-bit signed integer
 - `i64` - 64-bit signed integer
 - `f32` - 32-bit floating point
@@ -17,75 +34,175 @@ HEIDIC v2 is a statically-typed, compiled language that compiles to C++. This ve
 - `string` - String type
 - `void` - No return value
 
-### Composite Types
-- Arrays: `[T]` - Dynamic array of type T
-- Structs: User-defined data structures
-- Components: Special structs for ECS (Entity Component System)
-- Math types: `Vec2`, `Vec3`, `Vec4`, `Mat4`
+#### Composite Types
+- **Arrays**: `[T]` - Dynamic array of type T
+- **Structs**: User-defined data structures
+- **Components**: Special structs for ECS with default value support
+- **Math Types**: `Vec2`, `Vec3`, `Vec4`, `Mat4`, `Quat`
+- **Type Aliases**: Create shorter names for existing types
 
-### Language Features
-- Variables with type inference
-- Functions
-- Control flow: `if/else`, `while`, `loop`
-- Operators: arithmetic, comparison, logical
-- Built-in `print()` function
+#### ECS Components
+
+```heidic
+component Position {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+component Transform {
+    position: Vec3,
+    rotation: Quat,
+    scale: Vec3 = Vec3(1, 1, 1)  // default value
+}
+```
+
+### Control Flow
+
+- `if/else` statements
+- `while` loops
+- `loop` (infinite loops)
+- `match` expressions (pattern matching)
+- `defer` statements (execute on scope exit)
+
+### Standard Library
+
+The language includes built-in support for:
+- **Math**: Vector and matrix operations (`Vec2`, `Vec3`, `Vec4`, `Mat4`, `Quat`)
+- **Resources**: Texture, mesh, and audio resource management
+- **ECS**: Entity Component System with queries and systems
+- **Rendering**: Vulkan renderer integration
+- **Windowing**: GLFW window management
+- **UI**: ImGui integration for in-game UI
+
+## Electroscribe IDE
+
+HEIDIC includes **Electroscribe**, a lightweight Pygame-based IDE with:
+
+- **Syntax Highlighting**: Full HEIDIC syntax support
+- **Project Management**: Create and manage HEIDIC projects
+- **Integrated Build Pipeline**: Compile, build, and run with one click
+- **Hot-Reload Support**: Automatic reloading of `@hot` systems
+- **C++ View**: Toggle between HEIDIC source and generated C++
+- **Output Panels**: Separate panels for compiler output and program terminal
+- **File Watching**: Automatic recompilation on file changes
+
+### Running Electroscribe
+
+```bash
+cd ELECTROSCRIBE
+python main.py
+```
 
 ## Building
 
+### Prerequisites
+
+- **Rust** (for the HEIDIC compiler)
+- **Cargo** (Rust package manager)
+- **g++** (C++17 compiler)
+- **Vulkan SDK** (for Vulkan projects)
+- **GLFW** (for windowing)
+- **Python 3.7+** (for Electroscribe IDE)
+- **Pygame** (for Electroscribe GUI)
+
+### Build the Compiler
+
 ```bash
-cd heidic_v2
 cargo build --release
 ```
 
-## Usage
+This creates the HEIDIC compiler executable.
 
-### Compile a HEIDIC v2 file
+### Compile a HEIDIC File
 
 ```bash
 cargo run -- compile examples/hello.hd
 ```
 
-This will generate a `hello.cpp` file in the same directory.
+This generates a `hello.cpp` file in the same directory.
 
-### Compile the generated C++
+### Compile the Generated C++
 
 ```bash
 g++ -std=c++17 -O3 examples/hello.cpp -o hello
 ./hello
 ```
 
-## Example
-
-See `examples/hello.hd` for a complete example.
+Or use Electroscribe IDE for an integrated build experience.
 
 ## Project Structure
 
 ```
-heidic_v2/
-├── src/
-│   ├── main.rs          # Compiler entry point
-│   ├── lexer.rs         # Lexical analysis
-│   ├── parser.rs        # Syntax parsing
-│   ├── ast.rs           # Abstract syntax tree
-│   ├── type_checker.rs  # Type checking
-│   └── codegen.rs       # C++ code generation
-├── examples/
-│   └── hello.hd         # Example program
-├── Cargo.toml
-└── README.md
+HEIDIC/
+├── src/                    # HEIDIC compiler (Rust)
+│   ├── main.rs            # Compiler entry point
+│   ├── lexer.rs           # Lexical analysis
+│   ├── parser.rs          # Syntax parsing
+│   ├── ast.rs             # Abstract syntax tree
+│   ├── type_checker.rs    # Type checking
+│   └── codegen.rs         # C++ code generation
+├── ELECTROSCRIBE/         # Integrated Development Environment
+│   ├── main.py            # IDE entry point
+│   └── PROJECTS/          # HEIDIC projects
+├── stdlib/                # Standard library headers
+│   ├── math.h             # Math types and functions
+│   ├── mesh_resource.h    # Mesh loading
+│   ├── texture_resource.h # Texture loading
+│   ├── audio_resource.h   # Audio support
+│   └── ...
+├── vulkan/                # EDEN Engine runtime
+│   ├── eden_vulkan_helpers.cpp  # Vulkan renderer
+│   └── eden_vulkan_helpers.h
+├── examples/              # Example projects
+│   ├── hello.hd
+│   ├── spinning_cube/
+│   └── ...
+└── DOCS/                  # Documentation
+    └── HEIDIC/            # Language documentation
 ```
 
-## Differences from HEIDIC v1
+## Example
 
-- **No Vulkan types**: Removed all Vulkan-specific types (VkInstance, VkDevice, etc.)
-- **No GLFW types**: Removed GLFW-specific types
-- **No Vulkan includes**: Removed Vulkan/GLFW header includes from generated code
-- **Cleaner codebase**: Focused on core language features only
+```heidic
+fn main(): void {
+    let x: f32 = 10.0;
+    let y = 20.0;  // Type inference
+    
+    print("Hello, HEIDIC!");
+    print(x + y);
+}
+```
 
-## Future Enhancements
+## Documentation
 
-- Add more built-in functions
-- Improve error messages
-- Add more language features as needed
-- Add Vulkan/GLFW support when ready
+- [Language Specification](DOCS/HEIDIC/LANGUAGE.md)
+- [Language Reference](DOCS/HEIDIC/LANGUAGE_REFERENCE.md)
+- [EDEN Engine vs HEIDIC](DOCS/EDEN_VS_HEIDIC.md)
+- [Electroscribe IDE](ELECTROSCRIBE/README.md)
 
+## Performance
+
+HEIDIC is designed for high-performance game development:
+
+1. **Zero-cost abstractions**: Compiles to efficient C++ code
+2. **No garbage collection**: Manual memory management
+3. **Arena allocators**: Fast memory allocation for game objects
+4. **ECS support**: Built-in Entity Component System for efficient game object management
+5. **SOA layouts**: Structure-of-Arrays for GPU computing and cache efficiency
+
+## Compilation Pipeline
+
+```
+game.hd → [HEIDIC Compiler] → game.cpp → [C++ Compiler] → game.exe
+```
+
+This two-stage compilation ensures maximum performance while maintaining a clean, game-focused syntax.
+
+## License
+
+[Add your license here]
+
+## Contributing
+
+[Add contribution guidelines here]

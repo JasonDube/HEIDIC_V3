@@ -104,8 +104,8 @@ private:
         m_indexCount = meshData.indexCount;
         
         // Convert MeshData to interleaved vertex format
-        std::vector<MeshVertex> vertices;
-        vertices.reserve(meshData.vertexCount);
+        m_vertices.clear();
+        m_vertices.reserve(meshData.vertexCount);
         
         for (size_t i = 0; i < meshData.vertexCount; i++) {
             MeshVertex vertex = {};
@@ -135,11 +135,14 @@ private:
                 vertex.uv[1] = 0.0f; // Default UV
             }
             
-            vertices.push_back(vertex);
+            m_vertices.push_back(vertex);
         }
         
+        // Store indices
+        m_indices = meshData.indices;
+        
         // Create vertex buffer
-        VkDeviceSize vertexBufferSize = sizeof(MeshVertex) * vertices.size();
+        VkDeviceSize vertexBufferSize = sizeof(MeshVertex) * m_vertices.size();
         createBuffer(vertexBufferSize, 
                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -156,7 +159,7 @@ private:
         // Copy vertex data to staging buffer
         void* data;
         vkMapMemory(g_device, stagingVertexBufferMemory, 0, vertexBufferSize, 0, &data);
-        memcpy(data, vertices.data(), (size_t)vertexBufferSize);
+        memcpy(data, m_vertices.data(), (size_t)vertexBufferSize);
         vkUnmapMemory(g_device, stagingVertexBufferMemory);
         
         // Copy staging buffer to vertex buffer (using command buffer)
@@ -193,7 +196,7 @@ private:
         vkFreeMemory(g_device, stagingVertexBufferMemory, nullptr);
         
         // Create index buffer
-        VkDeviceSize indexBufferSize = sizeof(uint32_t) * meshData.indices.size();
+        VkDeviceSize indexBufferSize = sizeof(uint32_t) * m_indices.size();
         createBuffer(indexBufferSize,
                     VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -209,7 +212,7 @@ private:
         
         // Copy index data to staging buffer
         vkMapMemory(g_device, stagingIndexBufferMemory, 0, indexBufferSize, 0, &data);
-        memcpy(data, meshData.indices.data(), (size_t)indexBufferSize);
+        memcpy(data, m_indices.data(), (size_t)indexBufferSize);
         vkUnmapMemory(g_device, stagingIndexBufferMemory);
         
         // Copy staging buffer to index buffer
@@ -233,6 +236,16 @@ private:
     }
 
 public:
+    // Stored vertex/index data for HDM export
+    std::vector<MeshVertex> m_vertices;
+    std::vector<uint32_t> m_indices;
+    
+public:
+    /**
+     * Default constructor - creates empty mesh (use createFromData)
+     */
+    MeshResource() = default;
+    
     /**
      * Constructor - Loads OBJ file and creates Vulkan buffers
      * @param filepath Path to OBJ file
@@ -245,6 +258,129 @@ public:
         } catch (const std::exception& e) {
             cleanup();
             throw;
+        }
+    }
+    
+    /**
+     * Create mesh from raw vertex/index data (for HDM loading)
+     * @param device Vulkan device
+     * @param physicalDevice Vulkan physical device  
+     * @param vertices Vertex data (MeshVertex format)
+     * @param indices Index data
+     * @return true if successful
+     */
+    bool createFromData(VkDevice device, VkPhysicalDevice physicalDevice,
+                        const std::vector<MeshVertex>& vertices, 
+                        const std::vector<uint32_t>& indices) {
+        // Copy vertices directly (already in MeshVertex format)
+        m_vertices = vertices;
+        
+        m_indices = indices;
+        m_indexCount = indices.size();
+        m_hasNormals = true;
+        m_hasTexcoords = true;
+        
+        // Create vertex buffer
+        VkDeviceSize vertexBufferSize = sizeof(MeshVertex) * m_vertices.size();
+        if (vertexBufferSize == 0) return false;
+        
+        try {
+            createBuffer(vertexBufferSize, 
+                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                        m_vertexBuffer, m_vertexBufferMemory);
+            
+            // Create staging buffer for vertex data
+            VkBuffer stagingVertexBuffer;
+            VkDeviceMemory stagingVertexBufferMemory;
+            createBuffer(vertexBufferSize,
+                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                        stagingVertexBuffer, stagingVertexBufferMemory);
+            
+            // Copy vertex data to staging buffer
+            void* data;
+            vkMapMemory(g_device, stagingVertexBufferMemory, 0, vertexBufferSize, 0, &data);
+            memcpy(data, m_vertices.data(), (size_t)vertexBufferSize);
+            vkUnmapMemory(g_device, stagingVertexBufferMemory);
+            
+            // Copy staging buffer to vertex buffer
+            VkCommandBufferAllocateInfo allocInfo = {};
+            allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocInfo.commandPool = g_commandPool;
+            allocInfo.commandBufferCount = 1;
+            
+            VkCommandBuffer commandBuffer;
+            vkAllocateCommandBuffers(g_device, &allocInfo, &commandBuffer);
+            
+            VkCommandBufferBeginInfo beginInfo = {};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(commandBuffer, &beginInfo);
+            
+            VkBufferCopy copyRegion = {};
+            copyRegion.size = vertexBufferSize;
+            vkCmdCopyBuffer(commandBuffer, stagingVertexBuffer, m_vertexBuffer, 1, &copyRegion);
+            
+            vkEndCommandBuffer(commandBuffer);
+            
+            VkSubmitInfo submitInfo = {};
+            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &commandBuffer;
+            
+            vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+            vkQueueWaitIdle(g_graphicsQueue);
+            
+            vkFreeCommandBuffers(g_device, g_commandPool, 1, &commandBuffer);
+            vkDestroyBuffer(g_device, stagingVertexBuffer, nullptr);
+            vkFreeMemory(g_device, stagingVertexBufferMemory, nullptr);
+            
+            // Create index buffer
+            VkDeviceSize indexBufferSize = sizeof(uint32_t) * m_indices.size();
+            createBuffer(indexBufferSize,
+                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                        m_indexBuffer, m_indexBufferMemory);
+            
+            // Create staging buffer for index data
+            VkBuffer stagingIndexBuffer;
+            VkDeviceMemory stagingIndexBufferMemory;
+            createBuffer(indexBufferSize,
+                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                        stagingIndexBuffer, stagingIndexBufferMemory);
+            
+            // Copy index data to staging buffer
+            vkMapMemory(g_device, stagingIndexBufferMemory, 0, indexBufferSize, 0, &data);
+            memcpy(data, m_indices.data(), (size_t)indexBufferSize);
+            vkUnmapMemory(g_device, stagingIndexBufferMemory);
+            
+            // Copy staging buffer to index buffer
+            vkAllocateCommandBuffers(g_device, &allocInfo, &commandBuffer);
+            vkBeginCommandBuffer(commandBuffer, &beginInfo);
+            
+            copyRegion.size = indexBufferSize;
+            vkCmdCopyBuffer(commandBuffer, stagingIndexBuffer, m_indexBuffer, 1, &copyRegion);
+            
+            vkEndCommandBuffer(commandBuffer);
+            
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &commandBuffer;
+            
+            vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+            vkQueueWaitIdle(g_graphicsQueue);
+            
+            vkFreeCommandBuffers(g_device, g_commandPool, 1, &commandBuffer);
+            vkDestroyBuffer(g_device, stagingIndexBuffer, nullptr);
+            vkFreeMemory(g_device, stagingIndexBufferMemory, nullptr);
+            
+            m_loaded = true;
+            return true;
+        } catch (const std::exception& e) {
+            cleanup();
+            return false;
         }
     }
     
@@ -298,6 +434,10 @@ public:
     bool hasNormals() const { return m_hasNormals; }
     bool hasTexcoords() const { return m_hasTexcoords; }
     bool isLoaded() const { return m_loaded; }
+    
+    // Getters for raw data (for HDM export)
+    const std::vector<MeshVertex>& getVertices() const { return m_vertices; }
+    const std::vector<uint32_t>& getIndices() const { return m_indices; }
     
     // Get vertex input binding description (for pipeline creation)
     VkVertexInputBindingDescription getVertexInputBinding() const {
