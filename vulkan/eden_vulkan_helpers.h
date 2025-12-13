@@ -19,6 +19,11 @@ void heidic_glfw_vulkan_hints();
 // Returns GLFWwindow* or NULL on failure
 GLFWwindow* heidic_create_fullscreen_window(const char* title);
 
+// Create a borderless fullscreen window (windowed mode with no decorations)
+// Returns GLFWwindow* or NULL on failure
+// If width or height is 0, uses monitor's native resolution
+GLFWwindow* heidic_create_borderless_window(int width, int height, const char* title);
+
 // Initialize a basic renderer (returns 1 on success, 0 on failure)
 // This function handles all Vulkan setup internally
 int heidic_init_renderer(GLFWwindow* window);
@@ -36,6 +41,9 @@ void heidic_cleanup_renderer();
 
 // Sleep for milliseconds (to prevent CPU spinning)
 void heidic_sleep_ms(uint32_t milliseconds);
+
+// Convert f32 to i32 (for type conversions in HEIDIC)
+int32_t f32_to_i32(float value);
 
 // Cube rendering functions
 int heidic_init_renderer_cube(GLFWwindow* window);

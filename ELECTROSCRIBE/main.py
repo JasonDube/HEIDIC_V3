@@ -83,10 +83,11 @@ MENU_BUTTONS = [
     ("[O]", "Load Project", "load"),
     ("↓", "Save (Ctrl+S)", "save"),
     (">", "Run", "run"),
+    ("▲", "Transpile HEIROC→HEIDIC", "transpile_heiroc"),
     ("▶", "Hotload", "hotload"),
     ("◉", "Compile Shaders", "compile_shaders"),
     ("[S]", "Load Shader", "load_shader"),
-    ("C++", "Toggle View", "cpp"),  # Cycles HD -> C++ -> SD -> HD
+    ("C++", "Toggle View", "cpp"),  # Cycles HR -> HD -> C++ -> SD -> HR
     ("R", "Reload", "reload"),
     ("X", "Quit (Esc)", "quit"),
 ]
@@ -164,10 +165,22 @@ class Editor:
         self.mmb_dragging_terminal = False
         self.mmb_drag_start_y = 0
         self.mmb_drag_start_scroll = 0
-        self.view_mode = "hd"  # "hd", "cpp", or "shader"
+        self.view_mode = "hd"  # "hr", "hd", "cpp", or "shader"
         self.viewing_hd = True  # Deprecated: kept for compatibility, use view_mode instead
         self.current_shader_path = None  # Path to currently loaded shader
-        self.original_hd_path = path if path and path.endswith(".hd") else path  # Store original .hd path
+        # Initialize view_mode and original_hd_path based on file extension
+        if path:
+            if path.endswith(".heiroc"):
+                self.view_mode = "hr"
+                # Store corresponding .hd path for reference
+                self.original_hd_path = path.replace(".heiroc", ".hd")
+            elif path.endswith(".hd"):
+                self.view_mode = "hd"
+                self.original_hd_path = path
+            else:
+                self.original_hd_path = path
+        else:
+            self.original_hd_path = path  # Store original .hd path
         # Initialize view_mode based on path
         if not path or not path.endswith(".hd"):
             self.view_mode = "hd"
@@ -410,11 +423,13 @@ class Editor:
                     return False
     
     def save(self):
-        # Save to current file (HD, C++, or shader)
+        # Save to current file (HR, HD, C++, or shader)
         if self.view_mode == "shader" and self.current_shader_path:
             save_path = self.current_shader_path
         elif self.view_mode == "cpp" and not self.viewing_hd:
             save_path = self.path  # Save to .cpp file if in C++ view
+        elif self.view_mode == "hr":
+            save_path = self.path  # Save to .heiroc file if in HR view
         else:
             save_path = self.original_hd_path  # Default to .hd file
         
@@ -608,9 +623,66 @@ class Editor:
         return len(self.find_shaders_in_project()) > 0
     
     def toggle_view(self):
-        """Cycle through view modes: HD -> C++ -> SD -> HD"""
-        # Cycle: hd -> cpp -> shader -> hd
-        if self.view_mode == "hd":
+        """Cycle through view modes: HR -> HD -> C++ -> SD -> HR"""
+        # Cycle: hr -> hd -> cpp -> shader -> hr
+        if self.view_mode == "hr":
+            # Switch to HD
+            hd_path = self.original_hd_path
+            if hd_path and hd_path.endswith(".heiroc"):
+                hd_path = hd_path.replace(".heiroc", ".hd")
+            if hd_path and os.path.exists(hd_path):
+                self.view_mode = "hd"
+                self.viewing_hd = True
+                self.path = hd_path
+                self.lines = self._load_file(hd_path)
+                self.current_shader_path = None
+                self._reset_editor_state()
+                self.status = f"Viewing HEIDIC: {hd_path}"
+                return
+            # If no HD file, try C++
+            if self.cpp_file_exists():
+                cpp_path = (self.original_hd_path.replace(".heiroc", ".hd") if self.original_hd_path.endswith(".heiroc") else self.original_hd_path).replace(".hd", ".cpp")
+                if os.path.exists(cpp_path):
+                    self.view_mode = "cpp"
+                    self.viewing_hd = False
+                    self.path = cpp_path
+                    self.lines = self._load_file(cpp_path)
+                    self.current_shader_path = None
+                    self._reset_editor_state()
+                    self.status = f"Viewing C++: {cpp_path}"
+                    return
+            # If no C++ file, try shader mode
+            if self.has_shaders():
+                self.view_mode = "shader"
+                self.viewing_hd = False
+                self.log_lines = []
+                self.log_vscroll = 0
+                self.log_hscroll = 0
+                shaders = self.find_shaders_in_project()
+                if shaders:
+                    rel_path, full_path = shaders[0]
+                    self.current_shader_path = full_path
+                    self.path = full_path
+                    self.lines = self._load_file(full_path)
+                    self._reset_editor_state()
+                    self.log_lines = []
+                    self.status = f"Viewing Shader: {rel_path}"
+                    return
+            # No other files, but still switch to HD mode (file might not exist yet)
+            if hd_path:
+                self.view_mode = "hd"
+                self.viewing_hd = True
+                self.path = hd_path
+                # Try to load, or create empty if doesn't exist
+                if os.path.exists(hd_path):
+                    self.lines = self._load_file(hd_path)
+                else:
+                    self.lines = ["// HEIDIC file (transpile from HEIROC to generate)"]
+                self.current_shader_path = None
+                self._reset_editor_state()
+                self.status = f"Viewing HEIDIC: {hd_path} (file may not exist yet)"
+                return
+        elif self.view_mode == "hd":
             # Try to switch to C++
             if self.cpp_file_exists():
                 cpp_path = self.original_hd_path.replace(".hd", ".cpp")
@@ -642,6 +714,22 @@ class Editor:
                     self.log_lines = []  # Clear log again after reset
                     self.status = f"Viewing Shader: {rel_path}"
                     return
+            # If no shaders and no C++, go back to HR (or stay in HD)
+            # Try to go to HR first
+            heiroc_path = self.original_hd_path
+            if heiroc_path and heiroc_path.endswith(".hd"):
+                heiroc_path = heiroc_path.replace(".hd", ".heiroc")
+            if heiroc_path and os.path.exists(heiroc_path):
+                self.view_mode = "hr"
+                self.viewing_hd = True
+                self.path = heiroc_path
+                self.lines = self._load_file(heiroc_path)
+                self.current_shader_path = None
+                self._reset_editor_state()
+                self.status = f"Viewing HEIROC: {heiroc_path}"
+            else:
+                # Stay in HD mode
+                self.status = f"Viewing HEIDIC: {self.original_hd_path} (no other files to cycle to)"
         elif self.view_mode == "cpp":
             # Try to switch to shader mode
             if self.has_shaders():
@@ -661,23 +749,52 @@ class Editor:
                     self.log_lines = []  # Clear log again after reset
                     self.status = f"Viewing Shader: {rel_path}"
                     return
-            # No shaders, go back to HD
-            self.view_mode = "hd"
-            self.viewing_hd = True
-            self.path = self.original_hd_path
-            self.lines = self._load_file(self.original_hd_path)
-            self.current_shader_path = None
-            self._reset_editor_state()
-            self.status = f"Viewing HEIDIC: {self.original_hd_path}"
+            # No shaders, go back to HR (or HD if no HR file)
+            heiroc_path = self.original_hd_path
+            if heiroc_path and heiroc_path.endswith(".hd"):
+                heiroc_path = heiroc_path.replace(".hd", ".heiroc")
+            if heiroc_path and os.path.exists(heiroc_path):
+                self.view_mode = "hr"
+                self.viewing_hd = True
+                self.path = heiroc_path
+                self.lines = self._load_file(heiroc_path)
+                self.current_shader_path = None
+                self._reset_editor_state()
+                self.status = f"Viewing HEIROC: {heiroc_path}"
+            else:
+                # Fall back to HD
+                self.view_mode = "hd"
+                self.viewing_hd = True
+                self.path = self.original_hd_path
+                if os.path.exists(self.original_hd_path):
+                    self.lines = self._load_file(self.original_hd_path)
+                else:
+                    self.lines = ["// HEIDIC file (transpile from HEIROC to generate)"]
+                self.current_shader_path = None
+                self._reset_editor_state()
+                self.status = f"Viewing HEIDIC: {self.original_hd_path}"
         elif self.view_mode == "shader":
-            # Go back to HD
-            self.view_mode = "hd"
-            self.viewing_hd = True
-            self.path = self.original_hd_path
-            self.lines = self._load_file(self.original_hd_path)
-            self.current_shader_path = None
-            self._reset_editor_state()
-            self.status = f"Viewing HEIDIC: {self.original_hd_path}"
+            # Go back to HR (or HD if no HR file)
+            heiroc_path = self.original_hd_path
+            if heiroc_path and heiroc_path.endswith(".hd"):
+                heiroc_path = heiroc_path.replace(".hd", ".heiroc")
+            if heiroc_path and os.path.exists(heiroc_path):
+                self.view_mode = "hr"
+                self.viewing_hd = True
+                self.path = heiroc_path
+                self.lines = self._load_file(heiroc_path)
+                self.current_shader_path = None
+                self._reset_editor_state()
+                self.status = f"Viewing HEIROC: {heiroc_path}"
+            else:
+                # Fall back to HD
+                self.view_mode = "hd"
+                self.viewing_hd = True
+                self.path = self.original_hd_path
+                self.lines = self._load_file(self.original_hd_path)
+                self.current_shader_path = None
+                self._reset_editor_state()
+                self.status = f"Viewing HEIDIC: {self.original_hd_path}"
     
     def _reset_editor_state(self):
         """Reset editor cursor and scroll state."""
@@ -711,6 +828,131 @@ class Editor:
             self.status = f"Viewing Shader: {rel_path}"
             return True
         return False
+    
+    def transpile_heiroc_to_heidic(self):
+        """Transpile HEIROC file to HEIDIC."""
+        if self.view_mode != "hr" or not (self.path and self.path.endswith(".heiroc")):
+            self.status = "No HEIROC file loaded"
+            return
+        
+        # Save current HEIROC file first
+        self.save()
+        
+        heiroc_path = self.path
+        hd_path = heiroc_path.replace(".heiroc", ".hd")
+        
+        self.status = "Transpiling HEIROC to HEIDIC..."
+        pygame.display.flip()
+        
+        # Call the Rust transpiler
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.abspath(os.path.join(script_dir, ".."))
+        
+        # Check both possible locations for the executable
+        # 1. Workspace root target/debug (if part of workspace)
+        transpiler_path_workspace = os.path.join(project_root, "target", "debug", "heiroc_transpiler.exe")
+        # 2. heiroc_transpiler subdirectory target/debug (if standalone)
+        transpiler_path_standalone = os.path.join(project_root, "heiroc_transpiler", "target", "debug", "heiroc_transpiler.exe")
+        
+        # Use whichever exists, or default to standalone location
+        if os.path.exists(transpiler_path_standalone):
+            transpiler_path = transpiler_path_standalone
+        elif os.path.exists(transpiler_path_workspace):
+            transpiler_path = transpiler_path_workspace
+        else:
+            transpiler_path = transpiler_path_standalone  # Default to standalone for building
+        
+        # Build transpiler if it doesn't exist
+        if not os.path.exists(transpiler_path):
+            self.log_lines.append("Building HEIROC transpiler...")
+            pygame.display.flip()
+            build_cmd = ["cargo", "build", "--manifest-path", os.path.join(project_root, "heiroc_transpiler", "Cargo.toml")]
+            try:
+                result = subprocess.run(build_cmd, capture_output=True, text=True, cwd=project_root)
+                if result.returncode != 0:
+                    self.log_lines.append(f"ERROR: Failed to build transpiler: {result.stderr}")
+                    self.status = "Failed to build HEIROC transpiler"
+                    return
+                self.log_lines.append("Transpiler built successfully")
+                # Verify the executable exists after building - check both locations
+                if os.path.exists(transpiler_path_standalone):
+                    transpiler_path = transpiler_path_standalone
+                elif os.path.exists(transpiler_path_workspace):
+                    transpiler_path = transpiler_path_workspace
+                else:
+                    self.log_lines.append(f"ERROR: Transpiler executable not found after build")
+                    self.log_lines.append(f"Checked: {transpiler_path_standalone}")
+                    self.log_lines.append(f"Checked: {transpiler_path_workspace}")
+                    self.status = "Transpiler executable not found after build"
+                    return
+            except Exception as e:
+                self.log_lines.append(f"ERROR: Failed to build transpiler: {e}")
+                self.status = "Failed to build HEIROC transpiler"
+                return
+        
+        # Verify executable exists before running - check both locations one more time
+        if not os.path.exists(transpiler_path):
+            if os.path.exists(transpiler_path_standalone):
+                transpiler_path = transpiler_path_standalone
+            elif os.path.exists(transpiler_path_workspace):
+                transpiler_path = transpiler_path_workspace
+            else:
+                self.log_lines.append(f"ERROR: Transpiler executable not found")
+                self.log_lines.append(f"Checked: {transpiler_path_standalone}")
+                self.log_lines.append(f"Checked: {transpiler_path_workspace}")
+                self.status = "Transpiler executable not found"
+                return
+        
+        # Run transpiler - use absolute paths
+        transpiler_path = os.path.abspath(transpiler_path)
+        heiroc_path = os.path.abspath(heiroc_path)
+        hd_path = os.path.abspath(hd_path)
+        transpile_cmd = [transpiler_path, "transpile", heiroc_path, hd_path]
+        
+        self.log_lines.append(f"Running: {' '.join(transpile_cmd)}")
+        try:
+            result = subprocess.run(
+                transpile_cmd, 
+                capture_output=True, 
+                text=True, 
+                cwd=os.path.dirname(heiroc_path),
+                shell=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+            )
+            if result.returncode != 0:
+                self.log_lines.append(f"ERROR: Transpilation failed (exit code {result.returncode})")
+                if result.stderr:
+                    self.log_lines.append(f"STDERR: {result.stderr}")
+                if result.stdout:
+                    self.log_lines.append(f"STDOUT: {result.stdout}")
+                self.status = "Transpilation failed - check log"
+                return
+            
+            # Show output
+            if result.stdout:
+                self.log_lines.append(result.stdout)
+            if result.stderr:
+                self.log_lines.append(result.stderr)
+            
+            # Switch to HD view
+            if os.path.exists(hd_path):
+                self.view_mode = "hd"
+                self.original_hd_path = hd_path
+                self.path = hd_path
+                self.lines = self._load_file(hd_path)
+                self._reset_editor_state()
+                self.status = f"Transpiled to HEIDIC: {hd_path}"
+            else:
+                self.log_lines.append(f"ERROR: Output file not found at: {hd_path}")
+                self.status = "Transpilation completed but output file not found"
+        except FileNotFoundError as e:
+            self.log_lines.append(f"ERROR: Transpiler executable not found: {transpiler_path}")
+            self.log_lines.append(f"ERROR: {e}")
+            self.status = f"Transpiler not found: {os.path.basename(transpiler_path)}"
+        except Exception as e:
+            self.log_lines.append(f"ERROR: Transpilation error: {e}")
+            self.log_lines.append(f"ERROR: Command was: {' '.join(transpile_cmd)}")
+            self.status = f"Transpilation error: {e}"
     
     def compile_shaders_only(self):
         """Compile all shaders in the project without building the full project."""
@@ -1144,10 +1386,13 @@ class Editor:
             # Check if button should be disabled
             is_disabled = False
             if action == "cpp":
-                # Disable toggle button if no project loaded OR (no C++ file AND no shaders)
-                is_disabled = not has_project or (not cpp_exists and not has_shaders)
+                # Always enable toggle button - it can cycle through modes even if files don't exist
+                is_disabled = False
             elif action == "hotload" and not self.has_hot_systems():
                 is_disabled = True
+            elif action == "transpile_heiroc":
+                # Only enable if we're in HR mode and have a .heiroc file
+                is_disabled = self.view_mode != "hr" or not (self.path and self.path.endswith(".heiroc"))
             elif action == "load_shader":
                 # Disable if no project or no shaders
                 is_disabled = not (has_project and has_shaders)
@@ -1194,6 +1439,11 @@ class Editor:
                     # Play triangle
                     points = [(center_x - 6, center_y - 6), (center_x - 6, center_y + 6), (center_x + 6, center_y)]
                     pygame.draw.polygon(surface, icon_color, points)
+            elif action == "transpile_heiroc":
+                # Triangle pointing up (for HEIROC→HEIDIC transpile)
+                transpile_color = (120, 200, 120) if not is_disabled else (150, 150, 150)
+                points = [(center_x, center_y - 6), (center_x - 6, center_y + 6), (center_x + 6, center_y + 6)]
+                pygame.draw.polygon(surface, transpile_color, points)
             elif action == "hotload":
                 # Red arrow (right-pointing triangle in red)
                 arrow_color = (255, 80, 80) if not is_disabled else (150, 150, 150)
@@ -1211,15 +1461,17 @@ class Editor:
                 shader_y = center_y - shader_surf.get_height() // 2
                 surface.blit(shader_surf, (shader_x, shader_y))
             elif action == "cpp":
-                # Show current view: "HD", "C++", or "SD"
-                if self.view_mode == "hd":
+                # Show current view: "HR", "HD", "C++", or "SD"
+                if self.view_mode == "hr":
+                    btn_text = "HR"
+                elif self.view_mode == "hd":
                     btn_text = "HD"
                 elif self.view_mode == "cpp":
                     btn_text = "C++"
                 elif self.view_mode == "shader":
                     btn_text = "SD"
                 else:
-                    btn_text = "HD"
+                    btn_text = "HR"
                 cpp_surf = icon_font.render(btn_text, True, icon_color)
                 cpp_x = center_x - cpp_surf.get_width() // 2
                 cpp_y = center_y - cpp_surf.get_height() // 2
@@ -1258,11 +1510,11 @@ class Editor:
                     text_area_start_y + i * line_height,
                 ),
             )
-            # Syntax-colored text (only for .hd files)
+            # Syntax-colored text (only for .hd and .heiroc files)
             if self.view_mode == "shader":
                 # GLSL syntax highlighting (simple)
                 tokens = self._syntax_tokens_glsl(self.lines[idx])
-            elif self.view_mode == "hd":
+            elif self.view_mode == "hd" or self.view_mode == "hr":
                 tokens = self._syntax_tokens(self.lines[idx])
             else:
                 tokens = [(self.lines[idx], None)]  # No syntax coloring for C++
@@ -2490,13 +2742,14 @@ def project_settings_dialog(screen, editor):
     Returns a dict with settings or None if cancelled."""
     font = pygame.font.SysFont("Consolas", 16)
     dialog_width = 600
-    dialog_height = 280
+    dialog_height = 360  # Increased to fit hotloading checkbox
     dialog_x = (SCREEN_WIDTH - dialog_width) // 2
     dialog_y = (SCREEN_HEIGHT - dialog_height) // 2
     
     # Settings
     enable_ui_windows = False
     enable_neuroshell = False
+    enable_hotloading = False
     
     clock = pygame.time.Clock()
     running = True
@@ -2533,6 +2786,12 @@ def project_settings_dialog(screen, editor):
                     if (checkbox_x <= mx <= checkbox_x + checkbox_size and
                         neuroshell_checkbox_y <= my <= neuroshell_checkbox_y + checkbox_size):
                         enable_neuroshell = not enable_neuroshell
+                    
+                    # Hotloading checkbox
+                    hotloading_checkbox_y = dialog_y + 220
+                    if (checkbox_x <= mx <= checkbox_x + checkbox_size and
+                        hotloading_checkbox_y <= my <= hotloading_checkbox_y + checkbox_size):
+                        enable_hotloading = not enable_hotloading
         
         # Redraw editor background
         editor.draw(screen)
@@ -2599,6 +2858,28 @@ def project_settings_dialog(screen, editor):
         desc_surf = font.render(desc_text, True, (150, 150, 150))
         dialog_surface.blit(desc_surf, (checkbox_x + checkbox_size + 10, neuroshell_checkbox_y + 22))
         
+        # Hotloading checkbox
+        hotloading_checkbox_y = 220
+        checkbox_rect = pygame.Rect(checkbox_x, hotloading_checkbox_y, checkbox_size, checkbox_size)
+        pygame.draw.rect(dialog_surface, (30, 30, 30), checkbox_rect)
+        pygame.draw.rect(dialog_surface, (150, 100, 255), checkbox_rect, 2)
+        
+        if enable_hotloading:
+            pygame.draw.line(dialog_surface, (100, 255, 100), 
+                           (checkbox_x + 4, hotloading_checkbox_y + 10),
+                           (checkbox_x + 8, hotloading_checkbox_y + 14), 3)
+            pygame.draw.line(dialog_surface, (100, 255, 100),
+                           (checkbox_x + 8, hotloading_checkbox_y + 14),
+                           (checkbox_x + 16, hotloading_checkbox_y + 4), 3)
+        
+        label_text = "Enable Hotloading (Runtime code reloading for @hot systems)"
+        label_surf = font.render(label_text, True, (240, 240, 240))
+        dialog_surface.blit(label_surf, (checkbox_x + checkbox_size + 10, hotloading_checkbox_y + 2))
+        
+        desc_text = "Edit @hot systems and reload without restarting the game"
+        desc_surf = font.render(desc_text, True, (150, 150, 150))
+        dialog_surface.blit(desc_surf, (checkbox_x + checkbox_size + 10, hotloading_checkbox_y + 22))
+        
         # Instructions
         hint_surf = font.render("Enter: Confirm | Esc: Cancel", True, (150, 150, 150))
         dialog_surface.blit(hint_surf, (10, dialog_height - 25))
@@ -2610,7 +2891,8 @@ def project_settings_dialog(screen, editor):
     if confirmed:
         return {
             "enable_ui_windows": enable_ui_windows,
-            "enable_neuroshell": enable_neuroshell
+            "enable_neuroshell": enable_neuroshell,
+            "enable_hotloading": enable_hotloading
         }
     return None
 
@@ -2623,11 +2905,14 @@ def project_picker_dialog(screen, editor):
     dialog_x = (SCREEN_WIDTH - dialog_width) // 2
     dialog_y = (SCREEN_HEIGHT - dialog_height) // 2
     
-    # Find all .hd files in PROJECTS folder
+    # Find all .hd files in PROJECTS folder (check subdirectories, but exclude "old projects")
     projects_dir = os.path.join(os.path.dirname(__file__), "PROJECTS")
     projects = []
     if os.path.exists(projects_dir):
         for root, dirs, files in os.walk(projects_dir):
+            # Skip "old projects" directory
+            if "old projects" in root.lower() or os.path.basename(root).lower() == "old projects":
+                continue
             for file in files:
                 if file.endswith(".hd"):
                     full_path = os.path.join(root, file)
@@ -3141,395 +3426,13 @@ def main():
                                         f.write(f"enable_ui_windows={settings['enable_ui_windows']}\n")
                                         f.write(f"enable_neuroshell={settings.get('enable_neuroshell', False)}\n")
                                     
-                                    # Create .hd file with same name as project
+                                    # Create .hd file path (will be created by transpiler)
                                     hd_filename = project_name + ".hd"
                                     new_path = os.path.join(project_dir, hd_filename)
-                                    # Template with Vulkan rendering setup
-                                    # All projects now support shader hotloading
-                                    if project_name.lower() == "hotload_test":
-                                        # Create hot-reload template
-                                        # Generate NEUROSHELL code if enabled
-                                        hotload_neuroshell_externs = ""
-                                        hotload_neuroshell_init = ""
-                                        hotload_neuroshell_update = ""
-                                        hotload_neuroshell_cleanup = ""
-                                        
-                                        if settings.get('enable_neuroshell', False):
-                                            hotload_neuroshell_externs = """// NEUROSHELL - Lightweight in-game UI system
-extern fn neuroshell_init(window: GLFWwindow): i32;
-extern fn neuroshell_update(delta_time: f32): void;
-extern fn neuroshell_shutdown(): void;
-extern fn neuroshell_is_enabled(): bool;
-
-"""
-                                            hotload_neuroshell_init = """    // Initialize NEUROSHELL (if enabled)
-    if (neuroshell_is_enabled()) {
-        print("Initializing NEUROSHELL...\\n");
-        let neuroshell_init_result: i32 = neuroshell_init(window);
-        if (neuroshell_init_result == 0) {
-            print("WARNING: NEUROSHELL initialization failed!\\n");
-        } else {
-            print("NEUROSHELL initialized!\\n");
-        }
-    }
-
-"""
-                                            hotload_neuroshell_update = """        // Update NEUROSHELL (if enabled)
-        if (neuroshell_is_enabled()) {
-            let delta_time: f32 = 0.016;  // ~60 FPS
-            neuroshell_update(delta_time);
-        }
-
-"""
-                                            hotload_neuroshell_cleanup = """    // Cleanup NEUROSHELL (if enabled)
-    if (neuroshell_is_enabled()) {
-        neuroshell_shutdown();
-    }
-
-"""
-                                        
-                                        template = f"""// HEIDIC Project: {project_name}
-// Hot-reloadable project with Vulkan rendering
-{hotload_neuroshell_externs}extern fn heidic_glfw_vulkan_hints(): void;
-extern fn heidic_init_renderer(window: GLFWwindow): i32;
-extern fn heidic_render_frame(window: GLFWwindow): void;
-extern fn heidic_set_rotation_speed(speed: f32): void;
-extern fn heidic_cleanup_renderer(): void;
-extern fn heidic_sleep_ms(milliseconds: i32): void;
-
-// Hot-reloadable system for rotation
-// Edit rotation_speed and use Hotload button to see changes instantly!
-@hot
-system(rotation) {{
-    fn get_rotation_speed(): f32 {{
-        // Try changing this value while the game is running!
-        let rotation_speed: f32 = 1.0;
-        return rotation_speed;
-    }}
-}}
-
-fn main(): void {{
-    print("=== {project_name} ===\\n");
-    print("Initializing GLFW...\\n");
-
-    let init_result: i32 = glfwInit();
-    if init_result == 0 {{
-        print("Failed to initialize GLFW!\\n");
-        return;
-    }}
-
-    print("GLFW initialized.\\n");
-    heidic_glfw_vulkan_hints();
-    
-    print("Creating window (800x600)...\\n");
-    let window: GLFWwindow = glfwCreateWindow(800, 600, "{project_name} - Hot Reload Test", 0, 0);
-    if window == 0 {{
-        print("Failed to create window!\\n");
-        glfwTerminate();
-        return;
-    }}
-
-    print("Window created.\\n");
-    print("Initializing Vulkan renderer...\\n");
-
-    let renderer_init: i32 = heidic_init_renderer(window);
-    if renderer_init == 0 {{
-        print("Failed to initialize renderer!\\n");
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return;
-    }}
-
-    print("Renderer initialized!\\n");
-{hotload_neuroshell_init}    print("Starting render loop...\\n");
-    print("\\n");
-    print("=== HOT-RELOAD INSTRUCTIONS ===\\n");
-    print("1. Edit rotation_speed in the @hot system\\n");
-    print("2. Save the file\\n");
-    print("3. Click the red Hotload button (▶)\\n");
-    print("4. Watch the triangle spin faster/slower!\\n");
-    print("5. Press ESC or close window to exit\\n");
-    print("\\n");
-
-    while glfwWindowShouldClose(window) == 0 {{
-        glfwPollEvents();
-
-        if glfwGetKey(window, 256) == 1 {{ // ESC key
-            glfwSetWindowShouldClose(window, 1);
-        }}
-
-        // Get rotation speed from hot-reloadable system
-        let rotation_speed: f32 = get_rotation_speed();
-        heidic_set_rotation_speed(rotation_speed); // pass speed to renderer for live updates
-{hotload_neuroshell_update}        heidic_render_frame(window);
-        heidic_sleep_ms(16); // ~60 FPS cap
-    }}
-
-    print("Cleaning up...\\n");
-{hotload_neuroshell_cleanup}    heidic_cleanup_renderer();
-    glfwDestroyWindow(window);
-    glfwTerminate();
-    print("Program exited successfully.\\n");
-    print("Done!\\n");
-}}
-"""
-                                    elif project_name.lower() == "blank_screen":
-                                        # Blank screen template (no rendering, just initialization)
-                                        template = f"""// HEIDIC Project: {project_name}
-// Blank screen template - initialize renderer but don't render anything
-
-extern fn heidic_glfw_vulkan_hints(): void;
-extern fn heidic_init_renderer(window: GLFWwindow): i32;
-extern fn heidic_cleanup_renderer(): void;
-extern fn heidic_sleep_ms(milliseconds: i32): void;
-
-fn main(): void {{
-    print("=== {project_name} ===\\n");
-    print("Initializing GLFW...\\n");
-
-    let init_result: i32 = glfwInit();
-    if init_result == 0 {{
-        print("Failed to initialize GLFW!\\n");
-        return;
-    }}
-
-    print("GLFW initialized.\\n");
-    heidic_glfw_vulkan_hints();
-    
-    print("Creating window (800x600)...\\n");
-    let window: GLFWwindow = glfwCreateWindow(800, 600, "{project_name}", 0, 0);
-    if window == 0 {{
-        print("Failed to create window!\\n");
-        glfwTerminate();
-        return;
-    }}
-
-    print("Window created.\\n");
-    print("Initializing Vulkan renderer...\\n");
-
-    let renderer_init: i32 = heidic_init_renderer(window);
-    if renderer_init == 0 {{
-        print("Failed to initialize renderer!\\n");
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return;
-    }}
-
-    print("Renderer initialized!\\n");
-    print("Window is open (blank screen).\\n");
-    print("Press ESC or close the window to exit.\\n");
-
-    while glfwWindowShouldClose(window) == 0 {{
-        glfwPollEvents();
-
-        if glfwGetKey(window, 256) == 1 {{ // ESC key
-            glfwSetWindowShouldClose(window, 1);
-        }}
-
-        // No rendering - just blank screen
-        heidic_sleep_ms(16); // ~60 FPS cap
-    }}
-
-    print("Cleaning up...\\n");
-    heidic_cleanup_renderer();
-    glfwDestroyWindow(window);
-    glfwTerminate();
-    print("Program exited successfully.\\n");
-    print("Done!\\n");
-}}
-"""
-                                    else:
-                                        # All projects support shader hotloading - use default template
-                                        # Generate UI windows code if enabled
-                                        ui_externs = ""
-                                        ui_init = ""
-                                        ui_update = ""
-                                        ui_render = ""
-                                        ui_cleanup = ""
-                                        
-                                        # Generate NEUROSHELL code if enabled
-                                        neuroshell_externs = ""
-                                        neuroshell_init = ""
-                                        neuroshell_update = ""
-                                        neuroshell_cleanup = ""
-                                        
-                                        if settings.get('enable_neuroshell', False):
-                                            neuroshell_externs = """// NEUROSHELL - Lightweight in-game UI system
-extern fn neuroshell_init(window: GLFWwindow): i32;
-extern fn neuroshell_update(delta_time: f32): void;
-extern fn neuroshell_shutdown(): void;
-extern fn neuroshell_is_enabled(): bool;
-
-// NEUROSHELL UI Element Creation
-extern fn neuroshell_create_panel(x: f32, y: f32, width: f32, height: f32): u32;
-extern fn neuroshell_create_button(x: f32, y: f32, width: f32, height: f32, texture_path: string): u32;
-extern fn neuroshell_create_image(x: f32, y: f32, width: f32, height: f32, texture_path: string): u32;
-extern fn neuroshell_create_animated_texture(x: f32, y: f32, width: f32, height: f32, texture_path: string, frame_width: i32, frame_height: i32, frame_count: i32, fps: f32): u32;
-
-// NEUROSHELL Element Properties
-extern fn neuroshell_set_visible(element_id: u32, visible: bool): void;
-extern fn neuroshell_set_position(element_id: u32, x: f32, y: f32): void;
-extern fn neuroshell_set_size(element_id: u32, width: f32, height: f32): void;
-extern fn neuroshell_set_color(element_id: u32, r: f32, g: f32, b: f32, a: f32): void;
-extern fn neuroshell_set_depth(element_id: u32, depth: f32): void;
-extern fn neuroshell_set_animation_state(element_id: u32, playing: bool, loop: bool): void;
-
-// NEUROSHELL Input
-extern fn neuroshell_is_button_clicked(button_id: u32): bool;
-extern fn neuroshell_get_mouse_position(x: *f32, y: *f32): void;
-
-"""
-                                            neuroshell_init = """    // Initialize NEUROSHELL (if enabled)
-    if (neuroshell_is_enabled()) {
-        print("Initializing NEUROSHELL...\\n");
-        let neuroshell_init_result: i32 = neuroshell_init(window);
-        if (neuroshell_init_result == 0) {
-            print("WARNING: NEUROSHELL initialization failed!\\n");
-        } else {
-            print("NEUROSHELL initialized!\\n");
-        }
-    }
-
-"""
-                                            neuroshell_update = """        // Update NEUROSHELL (if enabled)
-        if (neuroshell_is_enabled()) {
-            let delta_time: f32 = 0.016;  // ~60 FPS
-            neuroshell_update(delta_time);
-        }
-
-"""
-                                            neuroshell_cleanup = """    // Cleanup NEUROSHELL (if enabled)
-    if (neuroshell_is_enabled()) {
-        neuroshell_shutdown();
-    }
-
-"""
-                                        
-                                        if settings['enable_ui_windows']:
-                                            ui_externs = """// UI Windows (SDL2 + ImGui) - Optional game interface windows
-extern fn ui_manager_init(): bool;
-extern fn ui_manager_update(): void;
-extern fn ui_manager_render(): void;
-extern fn ui_manager_shutdown(): void;
-extern fn ui_manager_is_enabled(): bool;
-
-"""
-                                            # Single braces - Python will insert these literally into the f-string
-                                            ui_init = """    // Initialize UI windows (if enabled)
-    if (ui_manager_is_enabled()) {
-        print("Initializing UI windows...\\n");
-        ui_manager_init();
-        print("UI windows initialized!\\n");
-    }
-
-"""
-                                            ui_update = """        // Update UI windows (if enabled)
-        if (ui_manager_is_enabled()) {
-            ui_manager_update();
-        }
-
-"""
-                                            ui_render = """        // Render UI windows (if enabled)
-        if (ui_manager_is_enabled()) {
-            ui_manager_render();
-        }
-
-"""
-                                            ui_cleanup = """    // Cleanup UI windows (if enabled)
-    if (ui_manager_is_enabled()) {
-        ui_manager_shutdown();
-    }
-
-"""
-                                        
-                                        template = f"""// HEIDIC Project: {project_name}
-// This project supports shader hotloading - add @hot shader declarations to use it!
-{ui_externs}{neuroshell_externs}extern fn heidic_glfw_vulkan_hints(): void;
-extern fn heidic_init_renderer(window: GLFWwindow): i32;
-extern fn heidic_render_frame(window: GLFWwindow): void;
-extern fn heidic_set_rotation_speed(speed: f32): void;
-extern fn heidic_cleanup_renderer(): void;
-extern fn heidic_sleep_ms(milliseconds: i32): void;
-
-// Hot-reloadable system - edit values and use Hotload button to see changes instantly!
-// To add shader hotloading, add @hot shader declarations:
-// @hot
-// shader vertex "shaders/my_shader.vert" {{}}
-// @hot
-// shader fragment "shaders/my_shader.frag" {{}}
-@hot
-system(game_state) {{
-    fn get_rotation_speed(): f32 {{
-        // Try changing this value while the game is running and use Hotload!
-        let rotation_speed: f32 = 1.0;
-        return rotation_speed;
-    }}
-}}
-
-fn main(): void {{
-    print("=== {project_name} ===\\n");
-    print("Initializing GLFW...\\n");
-
-    let init_result: i32 = glfwInit();
-    if init_result == 0 {{
-        print("Failed to initialize GLFW!\\n");
-        return;
-    }}
-
-    print("GLFW initialized.\\n");
-    heidic_glfw_vulkan_hints();
-    
-    print("Creating window (800x600)...\\n");
-    let window: GLFWwindow = glfwCreateWindow(800, 600, "{project_name}", 0, 0);
-    if window == 0 {{
-        print("Failed to create window!\\n");
-        glfwTerminate();
-        return;
-    }}
-
-    print("Window created.\\n");
-    print("Initializing Vulkan renderer...\\n");
-
-    let renderer_init: i32 = heidic_init_renderer(window);
-    if renderer_init == 0 {{
-        print("Failed to initialize renderer!\\n");
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return;
-    }}
-
-    print("Renderer initialized!\\n");
-{ui_init}{neuroshell_init}    print("Starting render loop...\\n");
-    print("Press ESC or close the window to exit.\\n");
-    print("\\n");
-    print("=== HOT-RELOAD AVAILABLE ===\\n");
-    print("Edit values in the @hot system and use the Hotload button!\\n");
-    print("\\n");
-
-    while glfwWindowShouldClose(window) == 0 {{
-        glfwPollEvents();
-
-        if glfwGetKey(window, 256) == 1 {{ // ESC key
-            glfwSetWindowShouldClose(window, 1);
-        }}
-
-        // Get rotation speed from hot-reloadable system
-        let rotation_speed: f32 = get_rotation_speed();
-        heidic_set_rotation_speed(rotation_speed); // pass speed to renderer for live updates
-{ui_update}{neuroshell_update}        heidic_render_frame(window);
-{ui_render}        heidic_sleep_ms(16); // ~60 FPS cap
-    }}
-
-    print("Cleaning up...\\n");
-{ui_cleanup}{neuroshell_cleanup}    heidic_cleanup_renderer();
-    glfwDestroyWindow(window);
-    glfwTerminate();
-    print("Program exited successfully.\\n");
-    print("Done!\\n");
-}}
-"""
-                                    with open(new_path, "w", encoding="utf-8") as f:
-                                        f.write(template)
+                                    # Don't create .hd file yet - it will be generated by transpiling HEIROC
+                                    # Only create HEIROC file for now
+                                    # All .hd template generation code removed - .hd files are created by transpiler
+                                    # The .hd file will be created when the user clicks the transpile button
                                     
                                     # Copy default shader files to project directory (all projects)
                                     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -3550,26 +3453,52 @@ fn main(): void {{
                                         else:
                                             editor.log_lines.append(f"WARNING: Shader not found: {source_shader}")
                                     
-                                    editor.path = new_path
-                                    editor.original_hd_path = new_path
-                                    editor.view_mode = "hd"
+                                    # Create HEIROC file for new project
+                                    heiroc_path = new_path.replace(".hd", ".heiroc")
+                                    heiroc_template = f"""// HEIROC Project: {project_name}
+// HEIROC (HEIDIC Engine Interface for Rapid Object Configuration)
+
+main_loop(
+    video_resolution = 1; // 0=640x480, 1=800x600, 2=1280x720, 3=1920x1080
+    video_mode = 0;        // 0=Windowed, 1=Fullscreen, 2=Borderless
+    fps_max = 60;
+    random_seed = 0;
+    load_level = 'level.eden';
+)
+"""
+                                    with open(heiroc_path, "w", encoding="utf-8") as f:
+                                        f.write(heiroc_template)
+                                    
+                                    # Load HEIROC file and start in HR mode
+                                    editor.path = heiroc_path
+                                    editor.original_hd_path = new_path  # Keep reference to .hd file
+                                    editor.view_mode = "hr"
                                     editor.viewing_hd = True
                                     editor.current_shader_path = None
-                                    editor.lines = editor._load_file(new_path)
+                                    editor.lines = editor._load_file(heiroc_path)
                                     editor.cursor_x = 0
                                     editor.cursor_y = 0
                                     editor.scroll = 0
                                     editor.hscroll = 0
                                     editor.log_lines = []
-                                    editor.log_vscroll = 0
-                                    editor.log_hscroll = 0
-                                    editor.status = f"Created project: {project_name} at {new_path}"
+                                    editor.log_lines.append(f"Created new project: {project_name}")
+                                    editor.log_lines.append(f"HEIROC file: {heiroc_path}")
+                                    editor.log_lines.append(f".hd file will be created when you transpile HEIROC → HEIDIC")
+                                    
                             elif action == "load":
                                 selected_path = project_picker_dialog(screen, editor)
                                 if selected_path and os.path.exists(selected_path):
                                     editor.path = selected_path
-                                    editor.original_hd_path = selected_path if selected_path.endswith(".hd") else selected_path
-                                    editor.view_mode = "hd"
+                                    # Set view mode based on file extension
+                                    if selected_path.endswith(".heiroc"):
+                                        editor.view_mode = "hr"
+                                        editor.original_hd_path = selected_path.replace(".heiroc", ".hd")
+                                    elif selected_path.endswith(".hd"):
+                                        editor.view_mode = "hd"
+                                        editor.original_hd_path = selected_path
+                                    else:
+                                        editor.view_mode = "hd"
+                                        editor.original_hd_path = selected_path
                                     editor.viewing_hd = True
                                     editor.current_shader_path = None
                                     editor.lines = editor._load_file(selected_path)
@@ -3577,6 +3506,8 @@ fn main(): void {{
                                     editor.status = f"Loaded {selected_path}"
                             elif action == "save":
                                 editor.save()
+                            elif action == "transpile_heiroc":
+                                editor.transpile_heiroc_to_heidic()
                             elif action == "run":
                                 editor._run_clicked = True  # Mark run button as clicked
                                 # Force immediate redraw to show checkmark
@@ -3595,7 +3526,7 @@ fn main(): void {{
                                     if selected_shader:
                                         editor.load_shader(selected_shader)
                             elif action == "cpp":
-                                editor.toggle_view()  # Cycles HD -> C++ -> SD -> HD
+                                editor.toggle_view()  # Cycles HR -> HD -> C++ -> SD -> HR
                             elif action == "reload":
                                 editor.lines = editor._load_file(editor.path)
                                 editor.cursor_x = 0

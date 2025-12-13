@@ -332,6 +332,52 @@ extern "C" GLFWwindow* heidic_create_fullscreen_window(const char* title) {
     return window;
 }
 
+// Create a borderless fullscreen window (windowed mode with no decorations, covering entire screen)
+extern "C" GLFWwindow* heidic_create_borderless_window(int width, int height, const char* title) {
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    if (!monitor) {
+        std::cerr << "[GLFW] ERROR: Could not get primary monitor!" << std::endl;
+        return nullptr;
+    }
+    
+    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+    if (!mode) {
+        std::cerr << "[GLFW] ERROR: Could not get video mode!" << std::endl;
+        return nullptr;
+    }
+    
+    // Set window hints for borderless window
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    
+    // Use monitor's resolution for borderless if width/height not specified
+    int window_width = (width > 0) ? width : mode->width;
+    int window_height = (height > 0) ? height : mode->height;
+    
+    std::cout << "[GLFW] Creating borderless window: " << window_width << "x" << window_height << std::endl;
+    
+    // Create windowed window (no monitor) with borderless hints
+    GLFWwindow* window = glfwCreateWindow(window_width, window_height, title, nullptr, nullptr);
+    if (!window) {
+        std::cerr << "[GLFW] ERROR: Failed to create borderless window!" << std::endl;
+        // Reset window hints
+        glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+        return nullptr;
+    }
+    
+    // Center the window on the primary monitor
+    int x = (mode->width - window_width) / 2;
+    int y = (mode->height - window_height) / 2;
+    glfwSetWindowPos(window, x, y);
+    
+    // Reset window hints for future use (though we only create one window)
+    glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    
+    return window;
+}
+
 // Initialize Vulkan renderer
 extern "C" int heidic_init_renderer(GLFWwindow* window) {
     if (window == nullptr) {
@@ -1317,6 +1363,11 @@ extern "C" void heidic_cleanup_renderer() {
 // Sleep for milliseconds
 extern "C" void heidic_sleep_ms(uint32_t milliseconds) {
     std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
+}
+
+// Convert f32 to i32 (for type conversions in HEIDIC)
+extern "C" int32_t f32_to_i32(float value) {
+    return static_cast<int32_t>(value);
 }
 
 // Hot-reload shader function

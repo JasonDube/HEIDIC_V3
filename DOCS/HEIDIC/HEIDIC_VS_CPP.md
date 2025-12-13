@@ -2,13 +2,14 @@
 
 ## Overview
 
-HEIDIC is a programming language designed for **building game engines**, not scripting game logic. It compiles to C++ and provides game engine-specific abstractions and features that make engine development faster, safer, and more maintainable.
+HEIDIC is a programming language designed for **building game engines and game logic**. It compiles to C++ and provides game-focused abstractions and features that make game development faster, safer, and more maintainable.
 
-**Important Distinction:**
-- **HEIDIC**: A language for building game engines (like Unity's C#, Unreal's C++)
-- **Not**: A scripting language for game logic (like Lua, Python, or visual scripting)
+**Primary Use Case:**
+- **HEIDIC**: Optimized for building game engines (rendering systems, ECS frameworks, resource managers, physics engines, etc.)
+- **Also**: Can be used for game logic (gameplay systems, AI, game state management, etc.)
+- **Not**: A lightweight scripting language (like Lua or Python) - it's a full compiled language
 
-HEIDIC is used to write the engine itself - rendering systems, ECS frameworks, resource managers, physics engines, etc.
+HEIDIC is a complete programming language that can be used for both engine code and game logic, but it's particularly well-suited for engine development due to its performance characteristics and built-in engine features.
 
 ## Key Advantages
 
@@ -168,12 +169,13 @@ fn process_entities<T>(entities: [T]): void {
 ### ✅ Use HEIDIC When:
 
 - **Building a game engine** (rendering systems, ECS frameworks, resource managers)
+- **Writing game logic** (gameplay systems, AI, game state management)
 - You want ECS without library dependencies
-- You need hot reload for rapid engine iteration
-- You want game engine-focused abstractions
+- You need hot reload for rapid iteration
+- You want game-focused abstractions
 - You need performance but want productivity
 - You're building with Vulkan/GLFW
-- You're writing engine code, not game logic scripts
+- You want a single language for both engine and game code
 
 ### ❌ Use C++ When:
 
@@ -185,9 +187,9 @@ fn process_entities<T>(entities: [T]): void {
 
 ### ❌ HEIDIC is NOT for:
 
-- Scripting game logic (use Lua, Python, or a visual scripting system)
-- Writing gameplay code that runs on top of an engine
-- Modding or user-generated content scripting
+- Lightweight scripting (use Lua, Python, or a visual scripting system for modding)
+- User-generated content scripting (HEIDIC requires compilation)
+- Rapid prototyping where interpreted languages are more suitable
 
 ## Performance Comparison
 
@@ -217,13 +219,13 @@ This means you can:
 
 ## Conclusion
 
-HEIDIC is not a replacement for C++ in all scenarios, but for **building game engines**, it provides:
+HEIDIC is not a replacement for C++ in all scenarios, but for **game development** (both engine and game logic), it provides:
 
-1. **Faster Development**: Game engine-focused syntax and built-in ECS
+1. **Faster Development**: Game-focused syntax and built-in ECS
 2. **Better Safety**: Type checking and compile-time guarantees
 3. **Same Performance**: Compiles to efficient C++ code
 4. **Modern Workflow**: Hot reload and integrated tooling
-5. **Clear Separation**: Engine code vs game logic
+5. **Unified Language**: Use the same language for both engine and game code
 
-If you're **building a game engine**, HEIDIC gives you the power of C++ with the productivity of a higher-level language. It's designed for writing the engine itself - the rendering pipeline, ECS framework, resource systems, and other core engine components - not for scripting gameplay logic on top of an existing engine.
+If you're **building a game engine or writing game logic**, HEIDIC gives you the power of C++ with the productivity of a higher-level language. It's optimized for engine development (rendering pipelines, ECS frameworks, resource systems) but can also be used for gameplay code, AI, and other game systems. Unlike lightweight scripting languages, HEIDIC is a full compiled language suitable for both engine and game development.
 

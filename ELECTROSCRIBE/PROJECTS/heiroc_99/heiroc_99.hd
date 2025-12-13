@@ -1,0 +1,80 @@
+// HEIDIC code generated from HEIROC
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer(window: GLFWwindow): i32;
+extern fn heidic_render_frame(window: GLFWwindow): void;
+extern fn heidic_cleanup_renderer(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+extern fn heidic_load_level(level_path: string): void;
+extern fn glfwGetTime(): f64;
+extern fn f32_to_i32(value: f32): i32;
+extern fn heidic_create_fullscreen_window(title: string): GLFWwindow;
+extern fn heidic_create_borderless_window(width: i32, height: i32, title: string): GLFWwindow;
+
+fn main(): void {
+    print("=== HEIROC Project ===\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+
+    print("Creating borderless window (640x600)...\n");
+    let window: GLFWwindow = heidic_create_borderless_window(640, 600, "HEIROC Project");
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Initializing Vulkan renderer...\n");
+
+    let renderer_init: i32 = heidic_init_renderer(window);
+    if renderer_init == 0 {
+        print("Failed to initialize renderer!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("Renderer initialized!\n");
+    // WARNING: Level file 'level.eden' not found in project directory, skipping level load...
+    print("WARNING: Level file 'level.eden' not found in project directory, skipping level load...\n");
+    print("  Expected location: c:\\Users\\nitro\\Desktop\\PROJECTS\\HEIDIC\\ELECTROSCRIBE\\PROJECTS\\heiroc_99\\level.eden\n");
+    print("  To fix: Create the level file or update load_level in your HEIROC file.\n");
+
+    print("Starting render loop...\n");
+    print("Press ESC or close the window to exit.\n");
+
+    let target_frame_time: f32 = 0.016666666666666666;  // 60 FPS cap
+
+    while glfwWindowShouldClose(window) == 0 {
+        let frame_start: f32 = glfwGetTime();
+        glfwPollEvents();
+
+        if glfwGetKey(window, 256) == 1 { // ESC key
+            glfwSetWindowShouldClose(window, 1);
+        }
+
+        heidic_render_frame(window);
+
+        // FPS cap
+        let frame_time: f32 = glfwGetTime() - frame_start;
+        if frame_time < target_frame_time {
+            let sleep_ms: i32 = f32_to_i32((target_frame_time - frame_time) * 1000);
+            heidic_sleep_ms(sleep_ms);
+        }
+    }
+
+    print("Cleaning up...\n");
+    heidic_cleanup_renderer();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Program exited successfully.\n");
+    print("Done!\n");
+}

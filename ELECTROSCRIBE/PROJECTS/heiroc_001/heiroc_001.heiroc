@@ -1,0 +1,10 @@
+// HEIROC Project: heiroc_001
+// HEIROC (HEIDIC Engine Interface for Rapid Object Configuration)
+
+main_loop(
+    video_resolution = 1; // 0=640x480, 1=800x600, 2=1280x720, 3=1920x1080
+    video_mode = 0;        // 0=Windowed, 1=Fullscreen, 2=Borderless
+    fps_max = 60;
+    random_seed = 0;
+    load_level = 'level.eden';
+)

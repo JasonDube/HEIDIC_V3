@@ -4,13 +4,14 @@ A statically-typed, compiled language designed for building high-performance gam
 
 ## Overview
 
-HEIDIC is a programming language designed for **building game engines**, not scripting game logic. It provides zero-cost abstractions, direct integration with Vulkan and GLFW, and built-in support for Entity Component Systems (ECS). It features an integrated development environment (Electroscribe) with hot-reload capabilities, making it ideal for rapid engine development.
+HEIDIC is a programming language designed for **building game engines and game logic**. It provides zero-cost abstractions, direct integration with Vulkan and GLFW, and built-in support for Entity Component Systems (ECS). It features an integrated development environment (Electroscribe) with hot-reload capabilities, making it ideal for rapid game development.
 
-**Key Distinction:**
-- **HEIDIC**: A language for building game engines (rendering systems, ECS frameworks, resource managers)
-- **Not**: A scripting language for game logic (like Lua or visual scripting)
+**Primary Focus:**
+- **HEIDIC**: Optimized for building game engines (rendering systems, ECS frameworks, resource managers, physics engines)
+- **Also**: Can be used for game logic (gameplay systems, AI, game state management)
+- **Not**: A lightweight scripting language (like Lua or Python) - it's a full compiled language
 
-HEIDIC is used to write the engine itself - the core systems that power games.
+HEIDIC is a complete programming language that can be used for both engine code and game logic, but it's particularly well-suited for engine development due to its performance characteristics and built-in engine features.
 
 ## Key Features
 

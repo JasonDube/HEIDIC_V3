@@ -1,0 +1,111 @@
+// HEIDIC code generated from HEIROC
+// NEUROSHELL - Lightweight in-game UI system
+extern fn neuroshell_init(window: GLFWwindow): i32;
+extern fn neuroshell_update(delta_time: f32): void;
+extern fn neuroshell_shutdown(): void;
+extern fn neuroshell_is_enabled(): bool;
+
+// NEUROSHELL UI Element Creation
+extern fn neuroshell_create_panel(x: f32, y: f32, width: f32, height: f32): i32;
+extern fn neuroshell_set_visible(element_id: i32, visible: bool): void;
+extern fn neuroshell_set_position(element_id: i32, x: f32, y: f32): void;
+extern fn neuroshell_set_size(element_id: i32, width: f32, height: f32): void;
+extern fn neuroshell_set_depth(element_id: i32, depth: f32): void;
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer(window: GLFWwindow): i32;
+extern fn heidic_render_frame(window: GLFWwindow): void;
+extern fn heidic_cleanup_renderer(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+extern fn heidic_load_level(level_path: string): void;
+extern fn glfwGetTime(): f64;
+extern fn f32_to_i32(value: f32): i32;
+
+fn main(): void {
+    print("=== HEIROC Project ===\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+
+    print("Creating window (800x600)...\n");
+    let window: GLFWwindow = glfwCreateWindow(800, 600, "HEIROC Project", 0, 0);
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Initializing Vulkan renderer...\n");
+
+    let renderer_init: i32 = heidic_init_renderer(window);
+    if renderer_init == 0 {
+        print("Failed to initialize renderer!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("Renderer initialized!\n");
+    // Initialize NEUROSHELL (if enabled)
+    if (neuroshell_is_enabled()) {
+        print("Initializing NEUROSHELL...\n");
+        let neuroshell_init_result: i32 = neuroshell_init(window);
+        if (neuroshell_init_result == 0) {
+            print("WARNING: NEUROSHELL initialization failed!\n");
+        } else {
+            print("NEUROSHELL initialized!\n");
+        }
+    }
+
+    // Load level: level.eden
+    heidic_load_level("level.eden");
+
+    print("Starting render loop...\n");
+    print("Press ESC or close the window to exit.\n");
+
+    let target_frame_time: f32 = 0.016666666666666666;  // 60 FPS cap
+
+    while glfwWindowShouldClose(window) == 0 {
+        let frame_start: f32 = glfwGetTime();
+        glfwPollEvents();
+
+        if glfwGetKey(window, 256) == 1 { // ESC key
+            glfwSetWindowShouldClose(window, 1);
+        }
+
+        // Update NEUROSHELL (if enabled)
+        if (neuroshell_is_enabled()) {
+            let delta_time: f32 = 0.016;  // ~60 FPS
+            neuroshell_update(delta_time);
+        }
+
+        heidic_render_frame(window);
+
+        // FPS cap
+        let frame_time: f32 = glfwGetTime() - frame_start;
+        if frame_time < target_frame_time {
+            let sleep_ms: i32 = f32_to_i32((target_frame_time - frame_time) * 1000);
+            heidic_sleep_ms(sleep_ms);
+        }
+    }
+
+    print("Cleaning up...\n");
+    // Cleanup NEUROSHELL (if enabled)
+    if (neuroshell_is_enabled()) {
+        neuroshell_shutdown();
+    }
+
+    heidic_cleanup_renderer();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Program exited successfully.\n");
+    print("Done!\n");
+}

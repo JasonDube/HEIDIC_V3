@@ -1,0 +1,1 @@
+C:\Users\nitro\Desktop\PROJECTS\HEIDIC\heiroc_transpiler\target\debug\heiroc_transpiler.exe: C:\Users\nitro\Desktop\PROJECTS\HEIDIC\heiroc_transpiler\src\codegen.rs C:\Users\nitro\Desktop\PROJECTS\HEIDIC\heiroc_transpiler\src\lexer.rs C:\Users\nitro\Desktop\PROJECTS\HEIDIC\heiroc_transpiler\src\main.rs C:\Users\nitro\Desktop\PROJECTS\HEIDIC\heiroc_transpiler\src\parser.rs

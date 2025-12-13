@@ -1,0 +1,131 @@
+// HEIDIC Project: heiroc_test_button
+// This project supports shader hotloading - add @hot shader declarations to use it!
+// NEUROSHELL - Lightweight in-game UI system
+extern fn neuroshell_init(window: GLFWwindow): i32;
+extern fn neuroshell_update(delta_time: f32): void;
+extern fn neuroshell_shutdown(): void;
+extern fn neuroshell_is_enabled(): bool;
+
+// NEUROSHELL UI Element Creation
+extern fn neuroshell_create_panel(x: f32, y: f32, width: f32, height: f32): u32;
+extern fn neuroshell_create_button(x: f32, y: f32, width: f32, height: f32, texture_path: string): u32;
+extern fn neuroshell_create_image(x: f32, y: f32, width: f32, height: f32, texture_path: string): u32;
+extern fn neuroshell_create_animated_texture(x: f32, y: f32, width: f32, height: f32, texture_path: string, frame_width: i32, frame_height: i32, frame_count: i32, fps: f32): u32;
+
+// NEUROSHELL Element Properties
+extern fn neuroshell_set_visible(element_id: u32, visible: bool): void;
+extern fn neuroshell_set_position(element_id: u32, x: f32, y: f32): void;
+extern fn neuroshell_set_size(element_id: u32, width: f32, height: f32): void;
+extern fn neuroshell_set_color(element_id: u32, r: f32, g: f32, b: f32, a: f32): void;
+extern fn neuroshell_set_depth(element_id: u32, depth: f32): void;
+extern fn neuroshell_set_animation_state(element_id: u32, playing: bool, loop: bool): void;
+
+// NEUROSHELL Input
+extern fn neuroshell_is_button_clicked(button_id: u32): bool;
+extern fn neuroshell_get_mouse_position(x: *f32, y: *f32): void;
+
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer(window: GLFWwindow): i32;
+extern fn heidic_render_frame(window: GLFWwindow): void;
+extern fn heidic_set_rotation_speed(speed: f32): void;
+extern fn heidic_cleanup_renderer(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+// Hot-reloadable system - edit values and use Hotload button to see changes instantly!
+// To add shader hotloading, add @hot shader declarations:
+// @hot
+// shader vertex "shaders/my_shader.vert" {}
+// @hot
+// shader fragment "shaders/my_shader.frag" {}
+@hot
+system(game_state) {
+    fn get_rotation_speed(): f32 {
+        // Try changing this value while the game is running and use Hotload!
+        let rotation_speed: f32 = 1.0;
+        return rotation_speed;
+    }
+}
+
+fn main(): void {
+    print("=== heiroc_test_button ===\n");
+    print("Initializing GLFW...\n");
+
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("Failed to initialize GLFW!\n");
+        return;
+    }
+
+    print("GLFW initialized.\n");
+    heidic_glfw_vulkan_hints();
+    
+    print("Creating window (800x600)...\n");
+    let window: GLFWwindow = glfwCreateWindow(800, 600, "heiroc_test_button", 0, 0);
+    if window == 0 {
+        print("Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+
+    print("Window created.\n");
+    print("Initializing Vulkan renderer...\n");
+
+    let renderer_init: i32 = heidic_init_renderer(window);
+    if renderer_init == 0 {
+        print("Failed to initialize renderer!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+
+    print("Renderer initialized!\n");
+    // Initialize NEUROSHELL (if enabled)
+    if (neuroshell_is_enabled()) {
+        print("Initializing NEUROSHELL...\n");
+        let neuroshell_init_result: i32 = neuroshell_init(window);
+        if (neuroshell_init_result == 0) {
+            print("WARNING: NEUROSHELL initialization failed!\n");
+        } else {
+            print("NEUROSHELL initialized!\n");
+        }
+    }
+
+    print("Starting render loop...\n");
+    print("Press ESC or close the window to exit.\n");
+    print("\n");
+    print("=== HOT-RELOAD AVAILABLE ===\n");
+    print("Edit values in the @hot system and use the Hotload button!\n");
+    print("\n");
+
+    while glfwWindowShouldClose(window) == 0 {
+        glfwPollEvents();
+
+        if glfwGetKey(window, 256) == 1 { // ESC key
+            glfwSetWindowShouldClose(window, 1);
+        }
+
+        // Get rotation speed from hot-reloadable system
+        let rotation_speed: f32 = get_rotation_speed();
+        heidic_set_rotation_speed(rotation_speed); // pass speed to renderer for live updates
+        // Update NEUROSHELL (if enabled)
+        if (neuroshell_is_enabled()) {
+            let delta_time: f32 = 0.016;  // ~60 FPS
+            neuroshell_update(delta_time);
+        }
+
+        heidic_render_frame(window);
+        heidic_sleep_ms(16); // ~60 FPS cap
+    }
+
+    print("Cleaning up...\n");
+    // Cleanup NEUROSHELL (if enabled)
+    if (neuroshell_is_enabled()) {
+        neuroshell_shutdown();
+    }
+
+    heidic_cleanup_renderer();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("Program exited successfully.\n");
+    print("Done!\n");
+}
