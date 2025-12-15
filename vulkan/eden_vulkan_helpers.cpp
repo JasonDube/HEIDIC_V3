@@ -15,6 +15,9 @@
 #include <fstream>
 #include <string>
 #include <memory>
+#include <map>
+#include <set>
+#include <queue>
 #include <cstddef>
 #ifdef _WIN32
 #include <windows.h>
@@ -529,6 +532,7 @@ extern "C" int heidic_init_renderer(GLFWwindow* window) {
     queueCreateInfo.pQueuePriorities = &queuePriority;
     
     VkPhysicalDeviceFeatures deviceFeatures = {};
+    deviceFeatures.fillModeNonSolid = VK_TRUE;  // Enable wireframe rendering mode
     
     VkDeviceCreateInfo deviceCreateInfo = {};
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -6130,6 +6134,7 @@ extern "C" void heidic_cleanup_renderer_texture_quad() {
 static std::unique_ptr<MeshResource> g_objMeshResource = nullptr;
 static std::unique_ptr<TextureResource> g_objMeshTexture = nullptr; // Optional texture for OBJ
 static VkPipeline g_objMeshPipeline = VK_NULL_HANDLE;
+static VkPipeline g_objMeshWireframePipeline = VK_NULL_HANDLE;  // Wireframe pipeline for ESE
 static VkPipelineLayout g_objMeshPipelineLayout = VK_NULL_HANDLE;
 static VkDescriptorSetLayout g_objMeshDescriptorSetLayout = VK_NULL_HANDLE;
 static VkDescriptorPool g_objMeshDescriptorPool = VK_NULL_HANDLE;
@@ -6626,11 +6631,17 @@ extern "C" int heidic_init_renderer_obj_mesh(GLFWwindow* window, const char* obj
         vkFreeMemory(g_device, g_objMeshDummyTextureMemory, nullptr);
         vkDestroyBuffer(g_device, g_objMeshUniformBuffer, nullptr);
         vkFreeMemory(g_device, g_objMeshUniformBufferMemory, nullptr);
-        vkDestroyPipelineLayout(g_device, g_objMeshPipelineLayout, nullptr);
-        vkDestroyDescriptorSetLayout(g_device, g_objMeshDescriptorSetLayout, nullptr);
-        vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
-        vkDestroyShaderModule(g_device, g_objMeshFragShaderModule, nullptr);
         return 0;
+    }
+    
+    // Create wireframe pipeline (same as fill pipeline but with VK_POLYGON_MODE_LINE)
+    rasterizer.polygonMode = VK_POLYGON_MODE_LINE;
+    rasterizer.lineWidth = 1.0f;  // Wireframe line width
+    if (vkCreateGraphicsPipelines(g_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_objMeshWireframePipeline) != VK_SUCCESS) {
+        std::cerr << "[EDEN] WARNING: Failed to create wireframe pipeline (wireframe mode will be unavailable)" << std::endl;
+        // Don't fail initialization if wireframe pipeline fails
+    } else {
+        std::cout << "[EDEN] Wireframe pipeline created successfully" << std::endl;
     }
     
     g_objMeshInitialized = true;
@@ -7227,6 +7238,10 @@ extern "C" void heidic_cleanup_renderer_obj_mesh() {
         vkDestroyPipeline(g_device, g_objMeshPipeline, nullptr);
         g_objMeshPipeline = VK_NULL_HANDLE;
     }
+    if (g_objMeshWireframePipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_objMeshWireframePipeline, nullptr);
+        g_objMeshWireframePipeline = VK_NULL_HANDLE;
+    }
     if (g_objMeshPipelineLayout != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(g_device, g_objMeshPipelineLayout, nullptr);
         g_objMeshPipelineLayout = VK_NULL_HANDLE;
@@ -7280,29 +7295,185 @@ extern "C" void heidic_cleanup_renderer_obj_mesh() {
     g_objMeshInitialized = false;
 }
 
+// ESE Orbit Camera State (used by render_obj_mesh_to_command_buffer when rendering for ESE)
+static float g_eseCameraYaw = 45.0f;       // Horizontal rotation (degrees)
+static float g_eseCameraPitch = 30.0f;     // Vertical rotation (degrees)
+static float g_eseCameraDistance = 5.0f;   // Distance from target (zoom)
+static float g_eseCameraPanX = 0.0f;       // Pan offset X
+static float g_eseCameraPanY = 0.0f;       // Pan offset Y
+static float g_eseCameraTargetX = 0.0f;    // Target point X
+static float g_eseCameraTargetY = 0.0f;    // Target point Y
+static float g_eseCameraTargetZ = 0.0f;    // Target point Z
+static bool g_eseWireframeMode = false;    // Wireframe rendering mode
+static bool g_eseVertexMode = false;       // Vertex visualization mode (press 1)
+static bool g_eseEdgeMode = false;         // Edge visualization mode (press 2)
+static bool g_eseFaceMode = false;         // Face visualization mode (press 3)
+static bool g_eseQuadMode = false;         // Quad visualization mode (press 4)
+static bool g_eseShowNormals = false;      // Show face normals visualization
+static bool g_eseShowQuads = false;        // Show reconstructed quads visualization
+static int g_eseSelectedVertex = -1;       // Currently selected vertex index (-1 = none)
+static glm::vec3 g_eseSelectedVertexPos = glm::vec3(0.0f);  // Position of selected vertex
+static int g_eseSelectedEdge = -1;         // Currently selected edge index (-1 = none)
+static int g_eseSelectedFace = -1;         // Currently selected face index (-1 = none)
+static int g_eseSelectedQuad = -1;         // Currently selected quad index (-1 = none)
+static std::vector<std::array<uint32_t, 4>> g_eseReconstructedQuads;  // Reconstructed quads for quad mode
+
+// Quad edge structure (edges that are on quad perimeters, not internal diagonals)
+struct QuadEdge {
+    uint32_t v0, v1;           // Vertex indices
+    std::vector<int> quadIndices;  // Which quads contain this edge
+    int edgeInQuad;            // Edge index within the first quad (0-3)
+};
+static std::vector<QuadEdge> g_eseQuadEdges;  // All quad perimeter edges
+static size_t g_eseLastQuadEdgeIndexCount = 0;  // For detecting when to rebuild
+
+// Multi-selection support (Ctrl+click to add to selection)
+static std::set<int> g_eseSelectedVertices;  // Multiple selected vertices
+static std::set<int> g_eseSelectedEdges;     // Multiple selected quad edges
+static std::set<int> g_eseSelectedQuads;     // Multiple selected quads
+
+// Quad reconstruction tracking (global so it can be reset by undo)
+static size_t g_eseLastQuadIndexCount = 0;
+
+// Move gizmo state
+static int g_eseGizmoDragAxis = -1;        // -1=none, 0=X, 1=Y, 2=Z
+static bool g_eseGizmoDragging = false;    // Is user dragging the gizmo?
+static bool g_eseGizmoScaling = false;     // Is user scaling (vs moving)?
+static bool g_eseGizmoRotating = false;    // Is user rotating?
+static float g_eseGizmoDragStartValue = 0.0f;  // Starting value when drag began
+static double g_eseGizmoDragStartMouse = 0.0;  // Starting mouse position
+static double g_eseGizmoDragStartMouseY = 0.0; // For rotation
+static glm::vec3 g_eseGizmoPosition = glm::vec3(0.0f);  // Current gizmo center position
+static glm::vec3 g_eseScaleCenter = glm::vec3(0.0f);    // Center point for scaling
+
+// Extrude mode state
+static bool g_eseExtrudeMode = false;      // W key enables extrude for next operation
+static bool g_eseExtrudeExecuted = false;  // Has extrusion been performed this drag?
+static std::vector<uint32_t> g_eseExtrudedVertices;  // Indices of extruded vertices to move
+
+// Undo system - stores previous mesh state
+struct MeshState {
+    std::vector<MeshVertex> vertices;
+    std::vector<uint32_t> indices;
+    bool valid = false;
+};
+static std::vector<MeshState> g_eseUndoStack;
+static const size_t MAX_UNDO_LEVELS = 20;
+
+static void ese_save_undo_state() {
+    if (!g_objMeshResource) return;
+    
+    MeshState state;
+    state.vertices = g_objMeshResource->getVertices();
+    state.indices = g_objMeshResource->getIndices();
+    state.valid = true;
+    
+    g_eseUndoStack.push_back(state);
+    
+    // Limit undo stack size
+    while (g_eseUndoStack.size() > MAX_UNDO_LEVELS) {
+        g_eseUndoStack.erase(g_eseUndoStack.begin());
+    }
+    
+    std::cout << "[ESE] Saved undo state (stack size: " << g_eseUndoStack.size() << ")" << std::endl;
+}
+
+static bool ese_undo() {
+    if (g_eseUndoStack.empty() || !g_objMeshResource) {
+        std::cout << "[ESE] Nothing to undo" << std::endl;
+        return false;
+    }
+    
+    MeshState& state = g_eseUndoStack.back();
+    
+    // Restore mesh state
+    std::vector<MeshVertex>& vertices = g_objMeshResource->getVerticesMutable();
+    std::vector<uint32_t>& indices = g_objMeshResource->getIndicesMutable();
+    
+    vertices = state.vertices;
+    indices = state.indices;
+    
+    g_eseUndoStack.pop_back();
+    
+    // Rebuild GPU buffers
+    g_objMeshResource->rebuildBuffers();
+    
+    // Clear selections but KEEP the current mode (vertex/edge/face/quad mode stays active)
+    g_eseSelectedVertex = -1;
+    g_eseSelectedEdge = -1;
+    g_eseSelectedFace = -1;
+    g_eseSelectedQuad = -1;
+    g_eseSelectedVertices.clear();
+    g_eseSelectedEdges.clear();
+    g_eseSelectedQuads.clear();
+    // Force quad reconstruction on next frame by resetting the counter
+    g_eseReconstructedQuads.clear();
+    g_eseLastQuadIndexCount = 0;  // This forces reconstruction
+    
+    std::cout << "[ESE] Undo successful (stack size: " << g_eseUndoStack.size() << ")" << std::endl;
+    return true;
+}
+
+// Store current view/projection matrices for vertex projection
+static glm::mat4 g_eseCurrentViewMat = glm::mat4(1.0f);
+static glm::mat4 g_eseCurrentProjMat = glm::mat4(1.0f);
+
+// Project a 3D world position to 2D screen coordinates
+static glm::vec2 ese_project_to_screen(const glm::vec3& worldPos, bool* inFront) {
+    glm::vec4 clipPos = g_eseCurrentProjMat * g_eseCurrentViewMat * glm::vec4(worldPos, 1.0f);
+    *inFront = (clipPos.w > 0.0f);  // Check if point is in front of camera
+    if (clipPos.w != 0.0f) {
+        glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w;
+        float screenX = (ndc.x + 1.0f) * 0.5f * g_swapchainExtent.width;
+        float screenY = (ndc.y + 1.0f) * 0.5f * g_swapchainExtent.height;  // Y is already flipped in proj matrix
+        return glm::vec2(screenX, screenY);
+    }
+    return glm::vec2(-1000, -1000);  // Off screen
+}
+
 // Helper function to render OBJ mesh into an existing command buffer
 static void render_obj_mesh_to_command_buffer(VkCommandBuffer commandBuffer) {
     if (!g_objMeshInitialized || !g_objMeshResource) return;
     
-    // Update rotation
-    auto now = std::chrono::high_resolution_clock::now();
-    float deltaTime = std::chrono::duration<float>(now - g_lastTime).count();
-    g_lastTime = now;
-    g_objMeshRotationAngle += deltaTime * 0.5f; // Slow rotation
+    // No auto-rotation - camera is controlled by user input
     
-    // Bind pipeline
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_objMeshPipeline);
+    // Bind pipeline (use wireframe if enabled in ESE)
+    VkPipeline pipelineToUse = (g_eseWireframeMode && g_objMeshWireframePipeline != VK_NULL_HANDLE) 
+                                ? g_objMeshWireframePipeline 
+                                : g_objMeshPipeline;
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineToUse);
     
     // Update uniform buffer
     UniformBufferObject ubo = {};
     
-    // Model matrix - rotate the mesh
-    Vec3 axis = {0.0f, 1.0f, 0.0f};
-    ubo.model = mat4_rotate(axis, g_objMeshRotationAngle);
+    // Model matrix - identity (no model rotation, camera orbits around instead)
+    ubo.model = Mat4::identity();
     
-    // View matrix - look at mesh from above and to the side
-    Vec3 eye = {3.0f, 3.0f, 3.0f};
-    Vec3 center = {0.0f, 0.0f, 0.0f};
+    // View matrix - orbit camera around the target point
+    // Convert yaw and pitch from degrees to radians
+    float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
+    float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
+    
+    // Clamp pitch to avoid gimbal lock
+    if (pitchRad > 1.5f) pitchRad = 1.5f;
+    if (pitchRad < -1.5f) pitchRad = -1.5f;
+    
+    // Calculate camera position on a sphere around the target
+    float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
+    float camY = g_eseCameraDistance * sinf(pitchRad);
+    float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
+    
+    // Apply pan offset to both camera and target
+    Vec3 eye = {
+        camX + g_eseCameraTargetX + g_eseCameraPanX,
+        camY + g_eseCameraTargetY + g_eseCameraPanY,
+        camZ + g_eseCameraTargetZ
+    };
+    Vec3 center = {
+        g_eseCameraTargetX + g_eseCameraPanX,
+        g_eseCameraTargetY + g_eseCameraPanY,
+        g_eseCameraTargetZ
+    };
     Vec3 up = {0.0f, 1.0f, 0.0f};
     ubo.view = mat4_lookat(eye, center, up);
     
@@ -7315,6 +7486,14 @@ static void render_obj_mesh_to_command_buffer(VkCommandBuffer commandBuffer) {
     
     // Vulkan clip space has inverted Y and half Z
     ubo.proj[1][1] *= -1.0f;
+    
+    // Store matrices for vertex picking/visualization (only in render_obj_mesh_to_command_buffer for ESE)
+    glm::vec3 eyeVec(eye.x, eye.y, eye.z);
+    glm::vec3 centerVec(center.x, center.y, center.z);
+    glm::vec3 upVec(up.x, up.y, up.z);
+    g_eseCurrentViewMat = glm::lookAt(eyeVec, centerVec, upVec);
+    g_eseCurrentProjMat = glm::perspectiveRH_ZO(fov, aspect, nearPlane, farPlane);
+    g_eseCurrentProjMat[1][1] *= -1.0f;  // Match the Y flip
     
     // Update uniform buffer
     void* data;
@@ -7385,6 +7564,7 @@ struct HDMItemProperties {
     float weight = 1.0f;            // Mass for physics
     int category = 0;               // 0=generic, 1=consumable, 2=part, 3=resource, 4=scrap, 5=furniture, 6=weapon, 7=tool
     bool is_salvaged = false;       // Salvaged item flag
+    int mesh_class = 0;             // 0=head, 1=torso, 2=arm, 3=leg
 };
 
 struct HDMPhysicsProperties {
@@ -7404,6 +7584,16 @@ struct HDMModelProperties {
 struct HDMControlPoint {
     char name[32] = "";
     float position[3] = {0.0f, 0.0f, 0.0f};
+};
+
+// Connection Point for mesh-to-mesh connections
+struct ConnectionPoint {
+    char name[64] = "Connection Point";
+    int vertex_index = -1;          // Vertex number
+    float position[3] = {0.0f, 0.0f, 0.0f};  // XYZ position (read-only)
+    int connection_type = 0;        // 0=child, 1=parent
+    char connected_mesh[128] = "";  // Name of connected mesh
+    char connected_mesh_class[64] = "";  // Class of connected mesh
 };
 
 struct HDMProperties {
@@ -7447,6 +7637,20 @@ static const char* g_categoryNames[] = {
     "Tool"
 };
 
+// Mesh class names for display
+static const char* g_meshClassNames[] = {
+    "head",
+    "torso",
+    "arm",
+    "leg"
+};
+
+// Connection type names
+static const char* g_connectionTypeNames[] = {
+    "child",
+    "parent"
+};
+
 // ESE state
 static bool g_eseInitialized = false;
 static std::string g_eseCurrentObjPath = "";
@@ -7462,12 +7666,37 @@ static HDMGeometry g_esePackedGeometry;   // Packed geometry from loaded OBJ
 static HDMTexture g_esePackedTexture;     // Packed texture data
 static bool g_eseGeometryPacked = false;  // Has geometry been extracted?
 static bool g_eseTexturePacked = false;   // Has texture been loaded?
+static std::vector<ConnectionPoint> g_eseConnectionPoints;  // Connection points for mesh connections
+static int g_eseSelectedConnectionPoint = -1;  // Currently selected connection point index (-1 = none)
+static bool g_eseShowConnectionPointWindow = false;  // Show connection point properties window
+
+// Note: ESE Orbit Camera State and Wireframe Mode variables are declared earlier (before render_obj_mesh_to_command_buffer)
+
+// ESE Mouse Input State
+static bool g_eseLeftMouseDown = false;
+static bool g_eseRightMouseDown = false;
+static double g_eseLastMouseX = 0.0;
+static double g_eseLastMouseY = 0.0;
+static GLFWwindow* g_eseWindow = nullptr;  // Store window reference for input
+static float g_eseScrollDelta = 0.0f;      // Accumulated scroll delta for zoom
+static GLFWscrollfun g_esePrevScrollCallback = nullptr;  // Store previous scroll callback to chain
 
 #ifdef USE_IMGUI
-// ESE ImGui state
+// ESE ImGui state (declared before scroll callback so it can check initialization)
 static VkDescriptorPool g_eseImguiDescriptorPool = VK_NULL_HANDLE;
 static bool g_eseImguiInitialized = false;
 #endif
+
+// ESE scroll callback for mouse wheel zoom
+static void ese_scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    // Accumulate scroll delta (will be consumed in render function)
+    g_eseScrollDelta += (float)yoffset;
+    
+    // Chain to previous callback (ImGui's callback) so UI scrolling works
+    if (g_esePrevScrollCallback) {
+        g_esePrevScrollCallback(window, xoffset, yoffset);
+    }
+}
 
 // ============================================================================
 // HDM Binary Format Save/Load Functions
@@ -7546,6 +7775,13 @@ static bool hdm_save_binary(const char* filepath, const HDMProperties& props,
         return false;
     }
     
+    // Make a sanitized copy of properties to ensure valid data
+    HDMProperties sanitizedProps = props;
+    // Clamp num_control_points to valid range
+    if (sanitizedProps.num_control_points < 0 || sanitizedProps.num_control_points > 8) {
+        sanitizedProps.num_control_points = 0;
+    }
+    
     // Calculate sizes
     size_t propsSize = sizeof(HDMProperties);
     size_t geomHeaderSize = sizeof(uint32_t) * 2;  // vertex count + index count
@@ -7570,7 +7806,7 @@ static bool hdm_save_binary(const char* filepath, const HDMProperties& props,
     file.write(reinterpret_cast<const char*>(&header), sizeof(header));
     
     // Write properties
-    file.write(reinterpret_cast<const char*>(&props), sizeof(props));
+    file.write(reinterpret_cast<const char*>(&sanitizedProps), sizeof(sanitizedProps));
     
     // Write geometry header
     uint32_t vertexCount = geom.vertices.size();
@@ -7638,6 +7874,14 @@ static bool hdm_load_binary(const char* filepath, HDMProperties& props,
     // Read properties
     file.seekg(header.props_offset);
     file.read(reinterpret_cast<char*>(&props), sizeof(props));
+    
+    // Sanitize loaded properties to prevent garbage values
+    if (props.num_control_points < 0 || props.num_control_points > 8) {
+        props.num_control_points = 0;
+    }
+    if (props.item.mesh_class < 0 || props.item.mesh_class > 3) {
+        props.item.mesh_class = 0;
+    }
     
     // Read geometry
     file.seekg(header.geometry_offset);
@@ -7789,19 +8033,48 @@ static bool hdm_save_ascii(const char* filepath, const HDMProperties& props,
     file << "      \"category\": " << props.item.category << ",\n";
     file << "      \"is_salvaged\": " << (props.item.is_salvaged ? "true" : "false") << "\n";
     file << "    },\n";
+    // Sanitize physics values to prevent garbage
+    int collisionType = props.physics.collision_type;
+    if (collisionType < 0 || collisionType > 2) collisionType = 1;  // Default to box
+    
+    float bounds0 = props.physics.collision_bounds[0];
+    float bounds1 = props.physics.collision_bounds[1];
+    float bounds2 = props.physics.collision_bounds[2];
+    // Check for NaN or obviously garbage values
+    if (std::isnan(bounds0) || std::isinf(bounds0) || bounds0 < 0.001f || bounds0 > 10000.0f) bounds0 = 1.0f;
+    if (std::isnan(bounds1) || std::isinf(bounds1) || bounds1 < 0.001f || bounds1 > 10000.0f) bounds1 = 1.0f;
+    if (std::isnan(bounds2) || std::isinf(bounds2) || bounds2 < 0.001f || bounds2 > 10000.0f) bounds2 = 1.0f;
+    
+    float mass = props.physics.mass;
+    if (std::isnan(mass) || std::isinf(mass) || mass < 0.0f || mass > 100000.0f) mass = 1.0f;
+    
     file << "    \"physics\": {\n";
-    file << "      \"collision_type\": " << props.physics.collision_type << ",\n";
-    file << "      \"collision_bounds\": [" << props.physics.collision_bounds[0] << ", " << props.physics.collision_bounds[1] << ", " << props.physics.collision_bounds[2] << "],\n";
+    file << "      \"collision_type\": " << collisionType << ",\n";
+    file << "      \"collision_bounds\": [" << bounds0 << ", " << bounds1 << ", " << bounds2 << "],\n";
     file << "      \"is_static\": " << (props.physics.is_static ? "true" : "false") << ",\n";
-    file << "      \"mass\": " << props.physics.mass << "\n";
+    file << "      \"mass\": " << mass << "\n";
     file << "    },\n";
     file << "    \"control_points\": [\n";
-    for (int i = 0; i < props.num_control_points; i++) {
-        file << "      {\"name\": \"" << props.control_points[i].name << "\", \"position\": [" 
+    // Clamp to array bounds to prevent reading garbage memory
+    int numPoints = std::min(std::max(props.num_control_points, 0), 8);
+    for (int i = 0; i < numPoints; i++) {
+        // Escape special characters in name to prevent JSON corruption
+        std::string escapedName;
+        for (size_t j = 0; j < sizeof(props.control_points[i].name) && props.control_points[i].name[j]; j++) {
+            char c = props.control_points[i].name[j];
+            if (c == '"') escapedName += "\\\"";
+            else if (c == '\\') escapedName += "\\\\";
+            else if (c == '\n') escapedName += "\\n";
+            else if (c == '\r') escapedName += "\\r";
+            else if (c == '\t') escapedName += "\\t";
+            else if (c >= 32 && c < 127) escapedName += c;  // Only printable ASCII
+            // Skip non-printable characters
+        }
+        file << "      {\"name\": \"" << escapedName << "\", \"position\": [" 
              << props.control_points[i].position[0] << ", " 
              << props.control_points[i].position[1] << ", " 
              << props.control_points[i].position[2] << "]}";
-        if (i < props.num_control_points - 1) file << ",";
+        if (i < numPoints - 1) file << ",";
         file << "\n";
     }
     file << "    ]\n";
@@ -7840,6 +8113,91 @@ static bool hdm_save_ascii(const char* filepath, const HDMProperties& props,
     return true;
 }
 
+// Forward declaration for hdm_init_default_properties (defined later)
+static void hdm_init_default_properties(HDMProperties& props);
+
+// Helper: Find a string value in JSON by key
+static std::string json_find_string(const std::string& json, const std::string& key) {
+    std::string searchKey = "\"" + key + "\":";
+    size_t pos = json.find(searchKey);
+    if (pos == std::string::npos) return "";
+    
+    pos = json.find("\"", pos + searchKey.length());
+    if (pos == std::string::npos) return "";
+    pos++; // Skip opening quote
+    
+    size_t endPos = json.find("\"", pos);
+    if (endPos == std::string::npos) return "";
+    
+    return json.substr(pos, endPos - pos);
+}
+
+// Helper: Find an integer value in JSON by key
+static int json_find_int(const std::string& json, const std::string& key) {
+    std::string searchKey = "\"" + key + "\":";
+    size_t pos = json.find(searchKey);
+    if (pos == std::string::npos) return 0;
+    
+    pos += searchKey.length();
+    // Skip whitespace
+    while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    
+    std::string numStr;
+    while (pos < json.length() && (isdigit(json[pos]) || json[pos] == '-')) {
+        numStr += json[pos++];
+    }
+    return numStr.empty() ? 0 : std::stoi(numStr);
+}
+
+// Helper: Find a float value in JSON by key
+static float json_find_float(const std::string& json, const std::string& key) {
+    std::string searchKey = "\"" + key + "\":";
+    size_t pos = json.find(searchKey);
+    if (pos == std::string::npos) return 0.0f;
+    
+    pos += searchKey.length();
+    while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    
+    std::string numStr;
+    while (pos < json.length() && (isdigit(json[pos]) || json[pos] == '-' || json[pos] == '.' || json[pos] == 'e' || json[pos] == 'E' || json[pos] == '+')) {
+        numStr += json[pos++];
+    }
+    return numStr.empty() ? 0.0f : std::stof(numStr);
+}
+
+// Helper: Find a boolean value in JSON by key
+static bool json_find_bool(const std::string& json, const std::string& key) {
+    std::string searchKey = "\"" + key + "\":";
+    size_t pos = json.find(searchKey);
+    if (pos == std::string::npos) return false;
+    
+    pos += searchKey.length();
+    while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    
+    return json.substr(pos, 4) == "true";
+}
+
+// Helper: Find a float array in JSON by key (e.g., [1, 2, 3])
+static void json_find_float_array(const std::string& json, const std::string& key, float* out, int count) {
+    std::string searchKey = "\"" + key + "\":";
+    size_t pos = json.find(searchKey);
+    if (pos == std::string::npos) return;
+    
+    pos = json.find("[", pos);
+    if (pos == std::string::npos) return;
+    pos++; // Skip '['
+    
+    for (int i = 0; i < count; i++) {
+        while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == ',')) pos++;
+        
+        std::string numStr;
+        while (pos < json.length() && (isdigit(json[pos]) || json[pos] == '-' || json[pos] == '.' || json[pos] == 'e' || json[pos] == 'E' || json[pos] == '+')) {
+            numStr += json[pos++];
+        }
+        if (!numStr.empty()) out[i] = std::stof(numStr);
+    }
+}
+
 // Load HDM ASCII format (.hdma)
 static bool hdm_load_ascii(const char* filepath, HDMProperties& props,
                           HDMGeometry& geom, HDMTexture& tex) {
@@ -7849,33 +8207,600 @@ static bool hdm_load_ascii(const char* filepath, HDMProperties& props,
         return false;
     }
     
-    // Simple JSON parser (basic, assumes well-formed JSON)
-    // For production, use a proper JSON library, but for now this works
-    std::string line;
+    // Read entire file
     std::string json;
+    std::string line;
     while (std::getline(file, line)) {
         json += line + "\n";
     }
     file.close();
     
-    // Very basic JSON parsing - just extract key values
-    // This is a simplified parser - for production use a proper JSON library
-    std::istringstream iss(json);
-    std::string token;
+    std::cout << "[HDM] Parsing ASCII HDM file..." << std::endl;
     
-    // Parse properties
-    // For now, we'll use a simple approach: look for key-value pairs
-    // This is a minimal implementation - a full JSON parser would be better
+    // Initialize with defaults
+    hdm_init_default_properties(props);
     
-    // For ASCII format, we'll need to parse JSON properly
-    // For now, let's use a simpler approach: read the binary format if available,
-    // or implement a proper JSON parser
+    // Parse model properties
+    std::string objPath = json_find_string(json, "obj_path");
+    std::string texPath = json_find_string(json, "texture_path");
+    strncpy(props.model.obj_path, objPath.c_str(), sizeof(props.model.obj_path) - 1);
+    strncpy(props.model.texture_path, texPath.c_str(), sizeof(props.model.texture_path) - 1);
+    json_find_float_array(json, "scale", props.model.scale, 3);
+    json_find_float_array(json, "origin_offset", props.model.origin_offset, 3);
     
-    // TEMPORARY: For now, ASCII format loading is not fully implemented
-    // The user should use binary format for now, or we need a JSON library
-    std::cerr << "[HDM] WARNING: ASCII HDM loading is not yet fully implemented!" << std::endl;
-    std::cerr << "[HDM] Please use binary .hdm format for now, or implement a JSON parser." << std::endl;
-    return false;
+    // Parse item properties
+    props.item.item_type_id = json_find_int(json, "item_type_id");
+    std::string itemName = json_find_string(json, "item_name");
+    strncpy(props.item.item_name, itemName.c_str(), sizeof(props.item.item_name) - 1);
+    props.item.trade_value = json_find_int(json, "trade_value");
+    props.item.condition = json_find_float(json, "condition");
+    props.item.weight = json_find_float(json, "weight");
+    props.item.category = json_find_int(json, "category");
+    props.item.is_salvaged = json_find_bool(json, "is_salvaged");
+    props.item.mesh_class = json_find_int(json, "mesh_class");
+    
+    // Parse physics properties
+    props.physics.collision_type = json_find_int(json, "collision_type");
+    json_find_float_array(json, "collision_bounds", props.physics.collision_bounds, 3);
+    props.physics.is_static = json_find_bool(json, "is_static");
+    props.physics.mass = json_find_float(json, "mass");
+    
+    // Parse geometry
+    int vertexCount = json_find_int(json, "vertex_count");
+    int indexCount = json_find_int(json, "index_count");
+    
+    std::cout << "[HDM] Geometry: " << vertexCount << " vertices, " << indexCount << " indices" << std::endl;
+    
+    if (vertexCount > 0) {
+        std::string vertB64 = json_find_string(json, "vertices_base64");
+        if (!vertB64.empty()) {
+            std::vector<unsigned char> vertData = base64_decode(vertB64);
+            size_t expectedSize = vertexCount * sizeof(HDMVertex);
+            if (vertData.size() >= expectedSize) {
+                geom.vertices.resize(vertexCount);
+                memcpy(geom.vertices.data(), vertData.data(), expectedSize);
+                std::cout << "[HDM] Decoded " << vertexCount << " vertices" << std::endl;
+            } else {
+                std::cerr << "[HDM] Vertex data size mismatch: got " << vertData.size() << ", expected " << expectedSize << std::endl;
+            }
+        }
+    }
+    
+    if (indexCount > 0) {
+        std::string idxB64 = json_find_string(json, "indices_base64");
+        if (!idxB64.empty()) {
+            std::vector<unsigned char> idxData = base64_decode(idxB64);
+            size_t expectedSize = indexCount * sizeof(uint32_t);
+            if (idxData.size() >= expectedSize) {
+                geom.indices.resize(indexCount);
+                memcpy(geom.indices.data(), idxData.data(), expectedSize);
+                std::cout << "[HDM] Decoded " << indexCount << " indices" << std::endl;
+            } else {
+                std::cerr << "[HDM] Index data size mismatch: got " << idxData.size() << ", expected " << expectedSize << std::endl;
+            }
+        }
+    }
+    
+    // Parse texture
+    tex.width = json_find_int(json, "width");
+    tex.height = json_find_int(json, "height");
+    tex.format = json_find_int(json, "format");
+    
+    if (tex.width > 0 && tex.height > 0) {
+        std::string texB64 = json_find_string(json, "data_base64");
+        if (!texB64.empty()) {
+            tex.data = base64_decode(texB64);
+            std::cout << "[HDM] Decoded texture: " << tex.width << "x" << tex.height << std::endl;
+        }
+    }
+    
+    std::cout << "[HDM] ASCII HDM loaded successfully: " << filepath << std::endl;
+    return true;
+}
+
+// Forward declaration for pipeline init function
+static bool ese_init_mesh_pipeline_only(GLFWwindow* window);
+
+// Create a basic cube mesh
+static bool ese_create_cube_mesh(GLFWwindow* window) {
+    std::cout << "[ESE] Creating cube mesh..." << std::endl;
+    
+    // Initialize Vulkan if needed
+    if (g_device == VK_NULL_HANDLE) {
+        if (heidic_init_renderer(window) == 0) {
+            std::cerr << "[ESE] Failed to initialize Vulkan!" << std::endl;
+            return false;
+        }
+    }
+    
+    // Cube vertices: 8 corners, each with position, normal, and UV
+    // We'll create 24 vertices (4 per face) for proper normals and UVs
+    std::vector<MeshVertex> vertices;
+    std::vector<uint32_t> indices;
+    
+    // Cube size (1x1x1 centered at origin)
+    const float s = 0.5f;
+    
+    // Define 6 faces, each with 4 vertices
+    // Front face (Z+)
+    vertices.push_back({{-s, -s,  s}, {0, 0, 1}, {0, 0}});
+    vertices.push_back({{ s, -s,  s}, {0, 0, 1}, {1, 0}});
+    vertices.push_back({{ s,  s,  s}, {0, 0, 1}, {1, 1}});
+    vertices.push_back({{-s,  s,  s}, {0, 0, 1}, {0, 1}});
+    
+    // Back face (Z-)
+    vertices.push_back({{ s, -s, -s}, {0, 0, -1}, {0, 0}});
+    vertices.push_back({{-s, -s, -s}, {0, 0, -1}, {1, 0}});
+    vertices.push_back({{-s,  s, -s}, {0, 0, -1}, {1, 1}});
+    vertices.push_back({{ s,  s, -s}, {0, 0, -1}, {0, 1}});
+    
+    // Top face (Y+)
+    vertices.push_back({{-s,  s,  s}, {0, 1, 0}, {0, 0}});
+    vertices.push_back({{ s,  s,  s}, {0, 1, 0}, {1, 0}});
+    vertices.push_back({{ s,  s, -s}, {0, 1, 0}, {1, 1}});
+    vertices.push_back({{-s,  s, -s}, {0, 1, 0}, {0, 1}});
+    
+    // Bottom face (Y-)
+    vertices.push_back({{-s, -s, -s}, {0, -1, 0}, {0, 0}});
+    vertices.push_back({{ s, -s, -s}, {0, -1, 0}, {1, 0}});
+    vertices.push_back({{ s, -s,  s}, {0, -1, 0}, {1, 1}});
+    vertices.push_back({{-s, -s,  s}, {0, -1, 0}, {0, 1}});
+    
+    // Right face (X+)
+    vertices.push_back({{ s, -s,  s}, {1, 0, 0}, {0, 0}});
+    vertices.push_back({{ s, -s, -s}, {1, 0, 0}, {1, 0}});
+    vertices.push_back({{ s,  s, -s}, {1, 0, 0}, {1, 1}});
+    vertices.push_back({{ s,  s,  s}, {1, 0, 0}, {0, 1}});
+    
+    // Left face (X-)
+    vertices.push_back({{-s, -s, -s}, {-1, 0, 0}, {0, 0}});
+    vertices.push_back({{-s, -s,  s}, {-1, 0, 0}, {1, 0}});
+    vertices.push_back({{-s,  s,  s}, {-1, 0, 0}, {1, 1}});
+    vertices.push_back({{-s,  s, -s}, {-1, 0, 0}, {0, 1}});
+    
+    // Indices: 2 triangles per face (6 faces * 2 triangles * 3 indices = 36 indices)
+    for (uint32_t face = 0; face < 6; face++) {
+        uint32_t base = face * 4;
+        // First triangle
+        indices.push_back(base + 0);
+        indices.push_back(base + 1);
+        indices.push_back(base + 2);
+        // Second triangle
+        indices.push_back(base + 0);
+        indices.push_back(base + 2);
+        indices.push_back(base + 3);
+    }
+    
+    std::cout << "[ESE] Cube data: " << vertices.size() << " vertices, " << indices.size() << " indices" << std::endl;
+    
+    // Initialize pipeline if needed (WITHOUT loading OBJ)
+    if (g_objMeshPipeline == VK_NULL_HANDLE) {
+        std::cout << "[ESE] Initializing mesh pipeline..." << std::endl;
+        if (!ese_init_mesh_pipeline_only(window)) {
+            std::cerr << "[ESE] Failed to initialize mesh pipeline!" << std::endl;
+            return false;
+        }
+    }
+    
+    // Create mesh resource AFTER pipeline is ready
+    g_objMeshResource = std::make_unique<MeshResource>();
+    if (!g_objMeshResource->createFromData(g_device, g_physicalDevice, vertices, indices)) {
+        std::cerr << "[ESE] Failed to create cube mesh resource!" << std::endl;
+        g_objMeshResource.reset();
+        return false;
+    }
+    
+    // Update paths (empty for generated mesh)
+    g_eseCurrentObjPath = "(generated cube)";
+    g_eseCurrentTexturePath = "";
+    strncpy(g_eseHdmProperties.model.obj_path, "", sizeof(g_eseHdmProperties.model.obj_path) - 1);
+    strncpy(g_eseHdmProperties.model.texture_path, "", sizeof(g_eseHdmProperties.model.texture_path) - 1);
+    strncpy(g_eseHdmProperties.item.item_name, "Cube", sizeof(g_eseHdmProperties.item.item_name) - 1);
+    
+    g_eseModelLoaded = true;
+    g_esePropertiesModified = true;
+    
+    std::cout << "[ESE] Cube mesh created successfully!" << std::endl;
+    return true;
+}
+
+// Initialize just the mesh pipeline (without loading an OBJ file)
+static bool ese_init_mesh_pipeline_only(GLFWwindow* window) {
+    // Load shaders
+    std::vector<char> vertShaderCode, fragShaderCode;
+    try {
+        vertShaderCode = readFile("shaders/mesh.vert.spv");
+        fragShaderCode = readFile("shaders/mesh.frag.spv");
+        std::cout << "[ESE] Loaded mesh shaders from shaders/ directory" << std::endl;
+    } catch (const std::exception& e) {
+        try {
+            vertShaderCode = readFile("mesh.vert.spv");
+            fragShaderCode = readFile("mesh.frag.spv");
+            std::cout << "[ESE] Loaded mesh shaders from current directory" << std::endl;
+        } catch (const std::exception& e2) {
+            std::cerr << "[ESE] ERROR: Could not find mesh shader files!" << std::endl;
+            return false;
+        }
+    }
+    
+    // Create shader modules
+    VkShaderModuleCreateInfo vertCreateInfo = {};
+    vertCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vertCreateInfo.codeSize = vertShaderCode.size();
+    vertCreateInfo.pCode = reinterpret_cast<const uint32_t*>(vertShaderCode.data());
+    
+    if (vkCreateShaderModule(g_device, &vertCreateInfo, nullptr, &g_objMeshVertShaderModule) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to create vertex shader module!" << std::endl;
+        return false;
+    }
+    
+    VkShaderModuleCreateInfo fragCreateInfo = {};
+    fragCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    fragCreateInfo.codeSize = fragShaderCode.size();
+    fragCreateInfo.pCode = reinterpret_cast<const uint32_t*>(fragShaderCode.data());
+    
+    if (vkCreateShaderModule(g_device, &fragCreateInfo, nullptr, &g_objMeshFragShaderModule) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to create fragment shader module!" << std::endl;
+        vkDestroyShaderModule(g_device, g_objMeshVertShaderModule, nullptr);
+        return false;
+    }
+    
+    // Create descriptor set layout (UBO + texture sampler)
+    VkDescriptorSetLayoutBinding uboLayoutBinding = {};
+    uboLayoutBinding.binding = 0;
+    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uboLayoutBinding.descriptorCount = 1;
+    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    
+    VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+    samplerLayoutBinding.binding = 1;
+    samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    samplerLayoutBinding.descriptorCount = 1;
+    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    VkDescriptorSetLayoutBinding bindings[] = {uboLayoutBinding, samplerLayoutBinding};
+    
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
+    
+    if (vkCreateDescriptorSetLayout(g_device, &layoutInfo, nullptr, &g_objMeshDescriptorSetLayout) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to create descriptor set layout!" << std::endl;
+        return false;
+    }
+    
+    // Create pipeline layout
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &g_objMeshDescriptorSetLayout;
+    
+    if (vkCreatePipelineLayout(g_device, &pipelineLayoutInfo, nullptr, &g_objMeshPipelineLayout) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to create pipeline layout!" << std::endl;
+        return false;
+    }
+    
+    // Create graphics pipeline (similar to heidic_init_renderer_obj_mesh)
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = g_objMeshVertShaderModule;
+    vertShaderStageInfo.pName = "main";
+    
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = g_objMeshFragShaderModule;
+    fragShaderStageInfo.pName = "main";
+    
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+    
+    // Vertex input for MeshVertex (pos, normal, uv)
+    VkVertexInputBindingDescription bindingDescription = {};
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(MeshVertex);
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    
+    VkVertexInputAttributeDescription attributeDescriptions[3] = {};
+    // Position
+    attributeDescriptions[0].binding = 0;
+    attributeDescriptions[0].location = 0;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[0].offset = offsetof(MeshVertex, pos);
+    // Normal
+    attributeDescriptions[1].binding = 0;
+    attributeDescriptions[1].location = 1;
+    attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[1].offset = offsetof(MeshVertex, normal);
+    // UV
+    attributeDescriptions[2].binding = 0;
+    attributeDescriptions[2].location = 2;
+    attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[2].offset = offsetof(MeshVertex, uv);
+    
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = 3;
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
+    
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+    
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)g_swapchainExtent.width;
+    viewport.height = (float)g_swapchainExtent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    
+    VkRect2D scissor = {};
+    scissor.offset = {0, 0};
+    scissor.extent = g_swapchainExtent;
+    
+    VkPipelineViewportStateCreateInfo viewportState = {};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+    
+    VkPipelineRasterizationStateCreateInfo rasterizer = {};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+    
+    VkPipelineMultisampleStateCreateInfo multisampling = {};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    
+    VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+    
+    VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | 
+                                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+    
+    VkPipelineColorBlendStateCreateInfo colorBlending = {};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+    
+    VkGraphicsPipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = g_objMeshPipelineLayout;
+    pipelineInfo.renderPass = g_renderPass;
+    pipelineInfo.subpass = 0;
+    
+    if (vkCreateGraphicsPipelines(g_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_objMeshPipeline) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to create mesh graphics pipeline!" << std::endl;
+        return false;
+    }
+    
+    // Also create wireframe pipeline
+    rasterizer.polygonMode = VK_POLYGON_MODE_LINE;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    if (vkCreateGraphicsPipelines(g_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_objMeshWireframePipeline) != VK_SUCCESS) {
+        std::cerr << "[ESE] Warning: Failed to create wireframe pipeline" << std::endl;
+        // Non-fatal, continue
+    }
+    
+    // Create UBO buffer
+    VkBufferCreateInfo bufferInfo = {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = sizeof(UniformBufferObject);
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    
+    if (vkCreateBuffer(g_device, &bufferInfo, nullptr, &g_objMeshUniformBuffer) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to create uniform buffer!" << std::endl;
+        return false;
+    }
+    
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(g_device, g_objMeshUniformBuffer, &memRequirements);
+    
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, 
+                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    
+    if (vkAllocateMemory(g_device, &allocInfo, nullptr, &g_objMeshUniformBufferMemory) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to allocate uniform buffer memory!" << std::endl;
+        return false;
+    }
+    
+    vkBindBufferMemory(g_device, g_objMeshUniformBuffer, g_objMeshUniformBufferMemory, 0);
+    
+    // Create descriptor pool
+    VkDescriptorPoolSize poolSizes[2] = {};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[0].descriptorCount = 1;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = 1;
+    
+    VkDescriptorPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.maxSets = 1;
+    
+    if (vkCreateDescriptorPool(g_device, &poolInfo, nullptr, &g_objMeshDescriptorPool) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to create descriptor pool!" << std::endl;
+        return false;
+    }
+    
+    // Allocate descriptor set
+    VkDescriptorSetAllocateInfo setAllocInfo = {};
+    setAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    setAllocInfo.descriptorPool = g_objMeshDescriptorPool;
+    setAllocInfo.descriptorSetCount = 1;
+    setAllocInfo.pSetLayouts = &g_objMeshDescriptorSetLayout;
+    
+    if (vkAllocateDescriptorSets(g_device, &setAllocInfo, &g_objMeshDescriptorSet) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to allocate descriptor set!" << std::endl;
+        return false;
+    }
+    
+    // Create dummy white texture (1x1 pixel)
+    uint32_t dummyData = 0xFFFFFFFF; // White RGBA
+    createImage(1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                g_objMeshDummyTexture, g_objMeshDummyTextureMemory);
+    
+    // Transition and upload dummy texture data
+    VkCommandBuffer cmdBuffer = beginSingleTimeCommands();
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = g_objMeshDummyTexture;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    
+    vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    createBuffer(4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 stagingBuffer, stagingBufferMemory);
+    
+    void* data;
+    vkMapMemory(g_device, stagingBufferMemory, 0, 4, 0, &data);
+    memcpy(data, &dummyData, 4);
+    vkUnmapMemory(g_device, stagingBufferMemory);
+    
+    VkBufferImageCopy region = {};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {1, 1, 1};
+    
+    vkCmdCopyBufferToImage(cmdBuffer, stagingBuffer, g_objMeshDummyTexture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(cmdBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    
+    endSingleTimeCommands(cmdBuffer);
+    
+    vkDestroyBuffer(g_device, stagingBuffer, nullptr);
+    vkFreeMemory(g_device, stagingBufferMemory, nullptr);
+    
+    // Create image view for dummy texture
+    VkImageViewCreateInfo viewInfo = {};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = g_objMeshDummyTexture;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+    
+    if (vkCreateImageView(g_device, &viewInfo, nullptr, &g_objMeshDummyTextureView) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to create dummy texture image view!" << std::endl;
+        return false;
+    }
+    
+    // Create sampler for dummy texture
+    VkSamplerCreateInfo samplerInfo = {};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    
+    if (vkCreateSampler(g_device, &samplerInfo, nullptr, &g_objMeshDummySampler) != VK_SUCCESS) {
+        std::cerr << "[ESE] Failed to create sampler!" << std::endl;
+        return false;
+    }
+    
+    // Update descriptor set with UBO and texture
+    VkDescriptorBufferInfo uboInfo = {};
+    uboInfo.buffer = g_objMeshUniformBuffer;
+    uboInfo.offset = 0;
+    uboInfo.range = sizeof(UniformBufferObject);
+    
+    VkDescriptorImageInfo imageInfo = {};
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfo.imageView = g_objMeshDummyTextureView;
+    imageInfo.sampler = g_objMeshDummySampler;
+    
+    VkWriteDescriptorSet descriptorWrites[2] = {};
+    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[0].dstSet = g_objMeshDescriptorSet;
+    descriptorWrites[0].dstBinding = 0;
+    descriptorWrites[0].dstArrayElement = 0;
+    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    descriptorWrites[0].descriptorCount = 1;
+    descriptorWrites[0].pBufferInfo = &uboInfo;
+    
+    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[1].dstSet = g_objMeshDescriptorSet;
+    descriptorWrites[1].dstBinding = 1;
+    descriptorWrites[1].dstArrayElement = 0;
+    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrites[1].descriptorCount = 1;
+    descriptorWrites[1].pImageInfo = &imageInfo;
+    
+    vkUpdateDescriptorSets(g_device, 2, descriptorWrites, 0, nullptr);
+    
+    // Mark as initialized
+    g_objMeshInitialized = true;
+    
+    std::cout << "[ESE] Mesh pipeline initialized successfully!" << std::endl;
+    return true;
 }
 
 // Create Vulkan mesh from packed HDM data (for loading HDM files)
@@ -8230,6 +9155,15 @@ static bool hdm_create_mesh_from_packed(GLFWwindow* window, const HDMGeometry& g
         }
         
         std::cout << "[HDM] Pipeline initialized successfully!" << std::endl;
+        
+        // Create wireframe pipeline for ESE (same settings but with VK_POLYGON_MODE_LINE)
+        rasterizer.polygonMode = VK_POLYGON_MODE_LINE;
+        rasterizer.lineWidth = 1.0f;
+        if (vkCreateGraphicsPipelines(g_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &g_objMeshWireframePipeline) != VK_SUCCESS) {
+            std::cerr << "[HDM] WARNING: Failed to create wireframe pipeline (wireframe mode will be unavailable)" << std::endl;
+        } else {
+            std::cout << "[HDM] Wireframe pipeline created successfully!" << std::endl;
+        }
     }
     
     // Create texture from packed RGBA data if available
@@ -8497,15 +9431,17 @@ static bool hdm_load_json(const char* filepath, HDMProperties& props) {
 // Initialize ESE with default properties
 static void hdm_init_default_properties(HDMProperties& props) {
     memset(&props, 0, sizeof(props));
-    strncpy(props.hdm_version, "1.0", sizeof(props.hdm_version) - 1);
+    strncpy(props.hdm_version, "2.0", sizeof(props.hdm_version) - 1);
     strncpy(props.item.item_name, "Unnamed", sizeof(props.item.item_name) - 1);
     props.item.condition = 1.0f;
     props.item.weight = 1.0f;
+    props.item.mesh_class = 0;  // Default to head
     props.model.scale[0] = props.model.scale[1] = props.model.scale[2] = 1.0f;
-    props.physics.collision_type = 1;
+    props.physics.collision_type = 1;  // Box collision
     props.physics.collision_bounds[0] = props.physics.collision_bounds[1] = props.physics.collision_bounds[2] = 1.0f;
     props.physics.is_static = true;
     props.physics.mass = 1.0f;
+    props.num_control_points = 0;  // Explicitly set to 0
 }
 
 // Initialize ESE renderer with ImGui support
@@ -8516,6 +9452,23 @@ extern "C" int heidic_init_ese(GLFWwindow* window) {
     }
     
     std::cout << "[ESE] Initializing Echo Synapse Editor..." << std::endl;
+    
+    // Store window reference for input handling
+    g_eseWindow = window;
+    
+    // Initialize camera to default orbit position
+    g_eseCameraYaw = 45.0f;
+    g_eseCameraPitch = 30.0f;
+    g_eseCameraDistance = 5.0f;
+    g_eseCameraPanX = 0.0f;
+    g_eseCameraPanY = 0.0f;
+    g_eseCameraTargetX = 0.0f;
+    g_eseCameraTargetY = 0.0f;
+    g_eseCameraTargetZ = 0.0f;
+    g_eseScrollDelta = 0.0f;
+    
+    // Note: Scroll callback is set AFTER ImGui initialization (below)
+    // because ImGui_ImplGlfw_InitForVulkan with true would overwrite it
     
     // Initialize default HDM properties
     hdm_init_default_properties(g_eseHdmProperties);
@@ -8537,6 +9490,8 @@ extern "C" int heidic_init_ese(GLFWwindow* window) {
     ImGui::StyleColorsDark();
     
     // Initialize ImGui for GLFW
+    // Pass true to install all callbacks (mouse, keyboard, etc.)
+    // We chain our scroll callback after this
     ImGui_ImplGlfw_InitForVulkan(window, true);
     
     // Create descriptor pool for ImGui
@@ -8594,6 +9549,10 @@ extern "C" int heidic_init_ese(GLFWwindow* window) {
     std::cout << "[ESE] WARNING: ImGui not available (USE_IMGUI not defined)" << std::endl;
 #endif
     
+    // Set up scroll callback for zoom AFTER ImGui is initialized
+    // Store ImGui's scroll callback so we can chain to it
+    g_esePrevScrollCallback = glfwSetScrollCallback(window, ese_scroll_callback);
+    
     g_eseInitialized = true;
     std::cout << "[ESE] Echo Synapse Editor initialized!" << std::endl;
     return 1;
@@ -8602,6 +9561,1302 @@ extern "C" int heidic_init_ese(GLFWwindow* window) {
 // ESE render function with ImGui menu bar
 extern "C" void heidic_render_ese(GLFWwindow* window) {
     if (!g_eseInitialized) return;
+    
+    // =========================================================================
+    // Mouse Input Handling for Orbit Camera
+    // - Mouse wheel: zoom in/out
+    // - Left-click drag: rotate around model
+    // - Right-click drag: pan the view
+    // =========================================================================
+    
+    // Get current mouse position
+    double mouseX, mouseY;
+    glfwGetCursorPos(window, &mouseX, &mouseY);
+    
+    // Calculate mouse delta
+    double deltaX = mouseX - g_eseLastMouseX;
+    double deltaY = mouseY - g_eseLastMouseY;
+    
+    // Update mouse button states
+    bool leftDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    bool rightDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    
+#ifdef USE_IMGUI
+    // Check if ImGui wants to capture mouse (hovering over UI)
+    ImGuiIO& io = ImGui::GetIO();
+    bool imguiWantsMouse = io.WantCaptureMouse;
+#else
+    bool imguiWantsMouse = false;
+#endif
+    
+    // Handle keyboard input for selection mode toggles
+    static bool key1WasPressed = false;
+    static bool key2WasPressed = false;
+    static bool key3WasPressed = false;
+    static bool key4WasPressed = false;
+    static bool enterWasPressed = false;
+    bool key1Pressed = glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS;
+    bool key2Pressed = glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS;
+    bool key3Pressed = glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS;
+    bool key4Pressed = glfwGetKey(window, GLFW_KEY_4) == GLFW_PRESS;
+    bool ctrlPressed = (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || 
+                        glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS);
+    bool enterPressed = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS;
+    
+    // Key 1: Vertex mode
+    if (key1Pressed && !key1WasPressed && g_eseModelLoaded) {
+        g_eseVertexMode = !g_eseVertexMode;
+        if (g_eseVertexMode) {
+            g_eseEdgeMode = false;   // Disable other modes
+            g_eseFaceMode = false;
+            g_eseQuadMode = false;
+            g_eseSelectedEdges.clear();
+            g_eseSelectedQuads.clear();
+            std::cout << "[ESE] Vertex mode enabled - Ctrl+click for multi-select" << std::endl;
+        } else {
+            std::cout << "[ESE] Vertex mode disabled" << std::endl;
+            g_eseSelectedVertex = -1;
+            g_eseSelectedVertices.clear();
+        }
+    }
+    key1WasPressed = key1Pressed;
+    
+    // Key 2: Edge mode
+    if (key2Pressed && !key2WasPressed && g_eseModelLoaded) {
+        g_eseEdgeMode = !g_eseEdgeMode;
+        if (g_eseEdgeMode) {
+            g_eseVertexMode = false;  // Disable other modes
+            g_eseFaceMode = false;
+            g_eseQuadMode = false;
+            g_eseSelectedVertices.clear();
+            g_eseSelectedQuads.clear();
+            std::cout << "[ESE] Edge mode enabled - Ctrl+click for multi-select" << std::endl;
+        } else {
+            std::cout << "[ESE] Edge mode disabled" << std::endl;
+            g_eseSelectedEdge = -1;
+            g_eseSelectedEdges.clear();
+        }
+    }
+    key2WasPressed = key2Pressed;
+    
+    // Key 3: Face mode
+    if (key3Pressed && !key3WasPressed && g_eseModelLoaded) {
+        g_eseFaceMode = !g_eseFaceMode;
+        if (g_eseFaceMode) {
+            g_eseVertexMode = false;  // Disable other modes
+            g_eseEdgeMode = false;
+            g_eseQuadMode = false;
+            std::cout << "[ESE] Face mode enabled - click to select faces" << std::endl;
+        } else {
+            std::cout << "[ESE] Face mode disabled" << std::endl;
+            g_eseSelectedFace = -1;
+        }
+    }
+    key3WasPressed = key3Pressed;
+    
+    // Key 4: Quad mode
+    if (key4Pressed && !key4WasPressed && g_eseModelLoaded) {
+        g_eseQuadMode = !g_eseQuadMode;
+        if (g_eseQuadMode) {
+            g_eseVertexMode = false;  // Disable other modes
+            g_eseEdgeMode = false;
+            g_eseFaceMode = false;
+            g_eseSelectedVertices.clear();
+            g_eseSelectedEdges.clear();
+            std::cout << "[ESE] Quad mode enabled - Ctrl+click for multi-select" << std::endl;
+        } else {
+            std::cout << "[ESE] Quad mode disabled" << std::endl;
+            g_eseSelectedQuad = -1;
+            g_eseSelectedQuads.clear();
+        }
+    }
+    key4WasPressed = key4Pressed;
+    
+    // Ctrl+Z: Undo
+    static bool keyZWasPressed = false;
+    bool keyZPressed = glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS;
+    if (keyZPressed && !keyZWasPressed && ctrlPressed) {
+        ese_undo();
+    }
+    keyZWasPressed = keyZPressed;
+    
+    // Key I: Insert edge loop (edge mode - uses selected quad edge to determine loop direction)
+    static bool keyIWasPressed = false;
+    bool keyIPressed = glfwGetKey(window, GLFW_KEY_I) == GLFW_PRESS;
+    if (keyIPressed && !keyIWasPressed && g_eseEdgeMode && g_eseSelectedEdge >= 0 && 
+        g_eseSelectedEdge < (int)g_eseQuadEdges.size() && g_objMeshResource) {
+        ese_save_undo_state();
+        
+        std::vector<MeshVertex>& vertices = g_objMeshResource->getVerticesMutable();
+        std::vector<uint32_t>& indices = g_objMeshResource->getIndicesMutable();
+        
+        const QuadEdge& selectedEdge = g_eseQuadEdges[g_eseSelectedEdge];
+        
+        // The selected edge defines the NEW LOOP direction
+        // We need to cut all quads perpendicular to this edge, inserting new edges PARALLEL to selected edge
+        
+        // Helper to get position key for edge matching
+        auto getEdgePosKey = [&vertices](uint32_t va, uint32_t vb) -> std::pair<std::string, std::string> {
+            auto posToStr = [](float x, float y, float z) {
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.4f,%.4f,%.4f", x, y, z);
+                return std::string(buf);
+            };
+            std::string posA = posToStr(vertices[va].pos[0], vertices[va].pos[1], vertices[va].pos[2]);
+            std::string posB = posToStr(vertices[vb].pos[0], vertices[vb].pos[1], vertices[vb].pos[2]);
+            if (posA < posB) return std::make_pair(posA, posB);
+            return std::make_pair(posB, posA);
+        };
+        
+        // Build edge-to-quad map
+        std::map<std::pair<std::string, std::string>, std::vector<std::pair<int, int>>> edgeToQuadInfo;
+        for (int qi = 0; qi < (int)g_eseReconstructedQuads.size(); qi++) {
+            auto& q = g_eseReconstructedQuads[qi];
+            for (int ei = 0; ei < 4; ei++) {
+                uint32_t va = q[ei];
+                uint32_t vb = q[(ei + 1) % 4];
+                auto key = getEdgePosKey(va, vb);
+                edgeToQuadInfo[key].push_back(std::make_pair(qi, ei));
+            }
+        }
+        
+        // Get the position key of the selected edge
+        auto selectedEdgeKey = getEdgePosKey(selectedEdge.v0, selectedEdge.v1);
+        
+        // Find which quads contain this edge and at what local index
+        std::map<int, std::pair<int, int>> quadToCutEdges;  // qi -> (cutEdge1, cutEdge2)
+        std::set<int> visited;
+        std::queue<std::pair<int, int>> toVisit;
+        
+        // Start with quads that contain the selected edge
+        if (edgeToQuadInfo.count(selectedEdgeKey)) {
+            for (auto& info : edgeToQuadInfo[selectedEdgeKey]) {
+                int qi = info.first;
+                int edgeIdx = info.second;
+                // The selected edge is a "flow" edge (parallel to the new loop)
+                // So we cut the perpendicular edges
+                toVisit.push(std::make_pair(qi, edgeIdx));
+            }
+        }
+        
+        while (!toVisit.empty()) {
+            auto front = toVisit.front();
+            toVisit.pop();
+            int qi = front.first;
+            int flowEdgeIdx = front.second;  // This edge is parallel to the loop
+            
+            if (visited.count(qi)) continue;
+            visited.insert(qi);
+            
+            auto& q = g_eseReconstructedQuads[qi];
+            
+            // Flow edges are at flowEdgeIdx and (flowEdgeIdx + 2) % 4 (opposite)
+            // Cut edges are at (flowEdgeIdx + 1) % 4 and (flowEdgeIdx + 3) % 4
+            int cutEdge1 = (flowEdgeIdx + 1) % 4;
+            int cutEdge2 = (flowEdgeIdx + 3) % 4;
+            int flowEdge1 = flowEdgeIdx;
+            int flowEdge2 = (flowEdgeIdx + 2) % 4;
+            
+            quadToCutEdges[qi] = std::make_pair(cutEdge1, cutEdge2);
+            
+            // Follow through flow edges to adjacent quads
+            for (int fe : {flowEdge1, flowEdge2}) {
+                uint32_t va = q[fe];
+                uint32_t vb = q[(fe + 1) % 4];
+                auto flowKey = getEdgePosKey(va, vb);
+                
+                if (edgeToQuadInfo.count(flowKey)) {
+                    for (auto& info : edgeToQuadInfo[flowKey]) {
+                        int adjQi = info.first;
+                        int adjEdgeIdx = info.second;
+                        if (!visited.count(adjQi)) {
+                            toVisit.push(std::make_pair(adjQi, adjEdgeIdx));
+                        }
+                    }
+                }
+            }
+        }
+        
+        std::cout << "[ESE] Found " << quadToCutEdges.size() << " quads in edge loop" << std::endl;
+        
+        if (!quadToCutEdges.empty()) {
+            // Create midpoint vertices
+            std::map<std::pair<std::string, std::string>, uint32_t> edgePosToMidpoint;
+            std::map<std::pair<uint32_t, uint32_t>, uint32_t> edgeIdxToMidpoint;
+            
+            for (auto& entry : quadToCutEdges) {
+                int qi = entry.first;
+                auto cutPair = entry.second;
+                auto& q = g_eseReconstructedQuads[qi];
+                
+                for (int cutEdge : {cutPair.first, cutPair.second}) {
+                    uint32_t va = q[cutEdge];
+                    uint32_t vb = q[(cutEdge + 1) % 4];
+                    auto posKey = getEdgePosKey(va, vb);
+                    auto idxKey = std::make_pair(std::min(va, vb), std::max(va, vb));
+                    
+                    if (edgePosToMidpoint.count(posKey) == 0) {
+                        glm::vec3 p0(vertices[va].pos[0], vertices[va].pos[1], vertices[va].pos[2]);
+                        glm::vec3 p1(vertices[vb].pos[0], vertices[vb].pos[1], vertices[vb].pos[2]);
+                        glm::vec3 mid = (p0 + p1) * 0.5f;
+                        
+                        MeshVertex newVert;
+                        newVert.pos[0] = mid.x; newVert.pos[1] = mid.y; newVert.pos[2] = mid.z;
+                        newVert.normal[0] = (vertices[va].normal[0] + vertices[vb].normal[0]) * 0.5f;
+                        newVert.normal[1] = (vertices[va].normal[1] + vertices[vb].normal[1]) * 0.5f;
+                        newVert.normal[2] = (vertices[va].normal[2] + vertices[vb].normal[2]) * 0.5f;
+                        newVert.uv[0] = (vertices[va].uv[0] + vertices[vb].uv[0]) * 0.5f;
+                        newVert.uv[1] = (vertices[va].uv[1] + vertices[vb].uv[1]) * 0.5f;
+                        
+                        uint32_t newIdx = (uint32_t)vertices.size();
+                        vertices.push_back(newVert);
+                        edgePosToMidpoint[posKey] = newIdx;
+                    }
+                    edgeIdxToMidpoint[idxKey] = edgePosToMidpoint[posKey];
+                }
+            }
+            
+            // Find triangles to remove
+            std::set<size_t> trianglesToRemove;
+            size_t numTris = indices.size() / 3;
+            
+            for (auto& entry : quadToCutEdges) {
+                int qi = entry.first;
+                auto& q = g_eseReconstructedQuads[qi];
+                std::set<uint32_t> quadVerts;
+                quadVerts.insert(q[0]); quadVerts.insert(q[1]); quadVerts.insert(q[2]); quadVerts.insert(q[3]);
+                
+                for (size_t ti = 0; ti < numTris; ti++) {
+                    uint32_t tv0 = indices[ti * 3];
+                    uint32_t tv1 = indices[ti * 3 + 1];
+                    uint32_t tv2 = indices[ti * 3 + 2];
+                    
+                    if (quadVerts.count(tv0) && quadVerts.count(tv1) && quadVerts.count(tv2)) {
+                        trianglesToRemove.insert(ti);
+                    }
+                }
+            }
+            
+            // Build new index buffer
+            std::vector<uint32_t> newIndices;
+            for (size_t ti = 0; ti < numTris; ti++) {
+                if (trianglesToRemove.count(ti) == 0) {
+                    newIndices.push_back(indices[ti * 3]);
+                    newIndices.push_back(indices[ti * 3 + 1]);
+                    newIndices.push_back(indices[ti * 3 + 2]);
+                }
+            }
+            
+            // Add split quads
+            for (auto& entry : quadToCutEdges) {
+                int qi = entry.first;
+                auto cutPair = entry.second;
+                auto& q = g_eseReconstructedQuads[qi];
+                int cutEdge1 = cutPair.first;
+                int cutEdge2 = cutPair.second;
+                
+                uint32_t v0 = q[0], v1 = q[1], v2 = q[2], v3 = q[3];
+                
+                auto getMidpoint = [&](int edgeIdx) -> uint32_t {
+                    uint32_t va = q[edgeIdx];
+                    uint32_t vb = q[(edgeIdx + 1) % 4];
+                    auto key = std::make_pair(std::min(va, vb), std::max(va, vb));
+                    return edgeIdxToMidpoint[key];
+                };
+                
+                uint32_t mid1 = getMidpoint(cutEdge1);
+                uint32_t mid2 = getMidpoint(cutEdge2);
+                
+                // Split the quad at the midpoints of the cut edges
+                // The cut edges are perpendicular to the loop direction
+                // We create two quads by connecting the midpoints
+                
+                // Find which vertices are adjacent to which cut edge
+                // cutEdge1 connects q[cutEdge1] to q[(cutEdge1+1)%4]
+                // cutEdge2 connects q[cutEdge2] to q[(cutEdge2+1)%4]
+                
+                uint32_t ce1_v0 = q[cutEdge1];
+                uint32_t ce1_v1 = q[(cutEdge1 + 1) % 4];
+                uint32_t ce2_v0 = q[cutEdge2];
+                uint32_t ce2_v1 = q[(cutEdge2 + 1) % 4];
+                
+                // New quad 1: ce1_v0 -> mid1 -> mid2 -> ce2_v1
+                newIndices.push_back(ce1_v0); newIndices.push_back(mid1); newIndices.push_back(ce2_v1);
+                newIndices.push_back(ce2_v1); newIndices.push_back(mid1); newIndices.push_back(mid2);
+                
+                // New quad 2: mid1 -> ce1_v1 -> ce2_v0 -> mid2
+                newIndices.push_back(mid1); newIndices.push_back(ce1_v1); newIndices.push_back(mid2);
+                newIndices.push_back(mid2); newIndices.push_back(ce1_v1); newIndices.push_back(ce2_v0);
+            }
+            
+            indices = newIndices;
+            
+            std::cout << "[ESE] Edge loop inserted: " << quadToCutEdges.size() << " quads split, " 
+                      << edgePosToMidpoint.size() << " new vertices" << std::endl;
+            
+            g_objMeshResource->rebuildBuffers();
+            
+            // Reset and force reconstruction
+            g_eseSelectedEdge = -1;
+            g_eseSelectedEdges.clear();
+            g_eseLastQuadIndexCount = 0;
+        }
+    }
+    keyIWasPressed = keyIPressed;
+    
+    // Key W: Enable extrude mode (quad mode only)
+    static bool keyWWasPressed = false;
+    bool keyWPressed = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
+    if (keyWPressed && !keyWWasPressed && g_eseQuadMode && g_eseSelectedQuad >= 0) {
+        g_eseExtrudeMode = !g_eseExtrudeMode;
+        g_eseExtrudeExecuted = false;
+        g_eseExtrudedVertices.clear();
+        if (g_eseExtrudeMode) {
+            std::cout << "[ESE] EXTRUDE MODE ENABLED for quad " << g_eseSelectedQuad << std::endl;
+            std::cout << "[ESE] Quad has vertices: ";
+            if (g_eseSelectedQuad < (int)g_eseReconstructedQuads.size()) {
+                const auto& q = g_eseReconstructedQuads[g_eseSelectedQuad];
+                std::cout << q[0] << ", " << q[1] << ", " << q[2] << ", " << q[3] << std::endl;
+            }
+            std::cout << "[ESE] Drag any gizmo axis to extrude!" << std::endl;
+        } else {
+            std::cout << "[ESE] Extrude mode disabled" << std::endl;
+        }
+    }
+    keyWWasPressed = keyWPressed;
+    
+    // Ctrl+Enter: Create connection point from selected vertex
+    if (ctrlPressed && enterPressed && !enterWasPressed && g_eseVertexMode && 
+        g_eseSelectedVertex >= 0 && g_eseModelLoaded && g_objMeshResource) {
+        
+        const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+        if (g_eseSelectedVertex < (int)vertices.size()) {
+            ConnectionPoint cp;
+            snprintf(cp.name, sizeof(cp.name), "Connection Point %zu", g_eseConnectionPoints.size() + 1);
+            cp.vertex_index = g_eseSelectedVertex;
+            cp.position[0] = g_eseSelectedVertexPos.x;
+            cp.position[1] = g_eseSelectedVertexPos.y;
+            cp.position[2] = g_eseSelectedVertexPos.z;
+            cp.connection_type = 0;  // Default to child
+            cp.connected_mesh[0] = '\0';
+            cp.connected_mesh_class[0] = '\0';
+            
+            g_eseConnectionPoints.push_back(cp);
+            g_eseSelectedConnectionPoint = (int)g_eseConnectionPoints.size() - 1;
+            g_eseShowConnectionPointWindow = true;
+            g_esePropertiesModified = true;
+            
+            std::cout << "[ESE] Created connection point at vertex " << g_eseSelectedVertex << std::endl;
+        }
+    }
+    enterWasPressed = enterPressed;
+    
+    // Only process camera input if ImGui doesn't want the mouse
+    if (!imguiWantsMouse) {
+        // Check for gizmo axis click (only when we have a selection)
+        bool hasSelection = (!g_eseSelectedVertices.empty() && g_eseVertexMode) ||
+                            (!g_eseSelectedEdges.empty() && g_eseEdgeMode) ||
+                            (g_eseSelectedFace >= 0 && g_eseFaceMode) ||
+                            (!g_eseSelectedQuads.empty() && g_eseQuadMode);
+        
+        if (leftDown && !g_eseLeftMouseDown && hasSelection && !g_eseGizmoDragging) {
+            // Check if clicking on a gizmo axis, scale handle, or rotation circle
+            float axisLength = 0.3f;
+            float scaleHandlePos = 0.5f;  // Scale handles at 50% of axis
+            float rotRadius = axisLength * 0.7f;  // Rotation circle radius
+            float clickRadius = 15.0f;  // Pixels from axis endpoint
+            float scaleClickRadius = 12.0f;  // Pixels from scale handle
+            float rotClickRadius = 10.0f;  // Pixels from rotation circle
+            
+            bool inFrontC;
+            glm::vec2 screenC = ese_project_to_screen(g_eseGizmoPosition, &inFrontC);
+            
+            if (inFrontC) {
+                bool inFrontX, inFrontY, inFrontZ;
+                bool inFrontXS, inFrontYS, inFrontZS;
+                glm::vec2 screenX = ese_project_to_screen(g_eseGizmoPosition + glm::vec3(axisLength, 0, 0), &inFrontX);
+                glm::vec2 screenY = ese_project_to_screen(g_eseGizmoPosition + glm::vec3(0, axisLength, 0), &inFrontY);
+                glm::vec2 screenZ = ese_project_to_screen(g_eseGizmoPosition + glm::vec3(0, 0, axisLength), &inFrontZ);
+                // Scale handle positions
+                glm::vec2 screenXS = ese_project_to_screen(g_eseGizmoPosition + glm::vec3(axisLength * scaleHandlePos, 0, 0), &inFrontXS);
+                glm::vec2 screenYS = ese_project_to_screen(g_eseGizmoPosition + glm::vec3(0, axisLength * scaleHandlePos, 0), &inFrontYS);
+                glm::vec2 screenZS = ese_project_to_screen(g_eseGizmoPosition + glm::vec3(0, 0, axisLength * scaleHandlePos), &inFrontZS);
+                
+                float distX = glm::length(glm::vec2(mouseX, mouseY) - screenX);
+                float distY = glm::length(glm::vec2(mouseX, mouseY) - screenY);
+                float distZ = glm::length(glm::vec2(mouseX, mouseY) - screenZ);
+                float distXS = glm::length(glm::vec2(mouseX, mouseY) - screenXS);
+                float distYS = glm::length(glm::vec2(mouseX, mouseY) - screenYS);
+                float distZS = glm::length(glm::vec2(mouseX, mouseY) - screenZS);
+                float distCenter = glm::length(glm::vec2(mouseX, mouseY) - screenC);
+                
+                // Check rotation circles first (find closest point on each circle)
+                float minRotDistX = FLT_MAX, minRotDistY = FLT_MAX, minRotDistZ = FLT_MAX;
+                for (int i = 0; i < 16; i++) {
+                    float angle = (float)i / 16.0f * 2.0f * 3.14159f;
+                    bool f;
+                    // X rotation circle (YZ plane)
+                    glm::vec2 pX = ese_project_to_screen(g_eseGizmoPosition + glm::vec3(0, cosf(angle)*rotRadius, sinf(angle)*rotRadius), &f);
+                    if (f) minRotDistX = std::min(minRotDistX, glm::length(glm::vec2(mouseX, mouseY) - pX));
+                    // Y rotation circle (XZ plane)
+                    glm::vec2 pY = ese_project_to_screen(g_eseGizmoPosition + glm::vec3(cosf(angle)*rotRadius, 0, sinf(angle)*rotRadius), &f);
+                    if (f) minRotDistY = std::min(minRotDistY, glm::length(glm::vec2(mouseX, mouseY) - pY));
+                    // Z rotation circle (XY plane)
+                    glm::vec2 pZ = ese_project_to_screen(g_eseGizmoPosition + glm::vec3(cosf(angle)*rotRadius, sinf(angle)*rotRadius, 0), &f);
+                    if (f) minRotDistZ = std::min(minRotDistZ, glm::length(glm::vec2(mouseX, mouseY) - pZ));
+                }
+                
+                // Check rotation handles first
+                if (minRotDistX < rotClickRadius) {
+                    if (!(g_eseQuadMode && g_eseExtrudeMode)) ese_save_undo_state();
+                    g_eseGizmoDragAxis = 0;
+                    g_eseGizmoDragging = true;
+                    g_eseGizmoScaling = false;
+                    g_eseGizmoRotating = true;
+                    g_eseGizmoDragStartMouse = mouseX;
+                    g_eseGizmoDragStartMouseY = mouseY;
+                    std::cout << "[ESE] Rotating around X axis" << std::endl;
+                } else if (minRotDistY < rotClickRadius) {
+                    if (!(g_eseQuadMode && g_eseExtrudeMode)) ese_save_undo_state();
+                    g_eseGizmoDragAxis = 1;
+                    g_eseGizmoDragging = true;
+                    g_eseGizmoScaling = false;
+                    g_eseGizmoRotating = true;
+                    g_eseGizmoDragStartMouse = mouseX;
+                    g_eseGizmoDragStartMouseY = mouseY;
+                    std::cout << "[ESE] Rotating around Y axis" << std::endl;
+                } else if (minRotDistZ < rotClickRadius) {
+                    if (!(g_eseQuadMode && g_eseExtrudeMode)) ese_save_undo_state();
+                    g_eseGizmoDragAxis = 2;
+                    g_eseGizmoDragging = true;
+                    g_eseGizmoScaling = false;
+                    g_eseGizmoRotating = true;
+                    g_eseGizmoDragStartMouse = mouseX;
+                    g_eseGizmoDragStartMouseY = mouseY;
+                    std::cout << "[ESE] Rotating around Z axis" << std::endl;
+                }
+                // Check scale handles
+                else if (inFrontXS && distXS < scaleClickRadius) {
+                    if (!(g_eseQuadMode && g_eseExtrudeMode)) ese_save_undo_state();
+                    g_eseGizmoDragAxis = 0;
+                    g_eseGizmoDragging = true;
+                    g_eseGizmoScaling = true;
+                    g_eseGizmoRotating = false;
+                    g_eseGizmoDragStartMouse = mouseX;
+                    std::cout << "[ESE] Scaling X axis" << std::endl;
+                } else if (inFrontYS && distYS < scaleClickRadius) {
+                    if (!(g_eseQuadMode && g_eseExtrudeMode)) ese_save_undo_state();
+                    g_eseGizmoDragAxis = 1;
+                    g_eseGizmoDragging = true;
+                    g_eseGizmoScaling = true;
+                    g_eseGizmoRotating = false;
+                    g_eseGizmoDragStartMouse = mouseY;
+                    std::cout << "[ESE] Scaling Y axis" << std::endl;
+                } else if (inFrontZS && distZS < scaleClickRadius) {
+                    if (!(g_eseQuadMode && g_eseExtrudeMode)) ese_save_undo_state();
+                    g_eseGizmoDragAxis = 2;
+                    g_eseGizmoDragging = true;
+                    g_eseGizmoScaling = true;
+                    g_eseGizmoRotating = false;
+                    g_eseGizmoDragStartMouse = mouseX;
+                    std::cout << "[ESE] Scaling Z axis" << std::endl;
+                }
+                // Then check move handles
+                else if (inFrontX && distX < clickRadius) {
+                    if (!(g_eseQuadMode && g_eseExtrudeMode)) ese_save_undo_state();
+                    g_eseGizmoDragAxis = 0;
+                    g_eseGizmoDragging = true;
+                    g_eseGizmoScaling = false;
+                    g_eseGizmoRotating = false;
+                    g_eseGizmoDragStartMouse = mouseX;
+                    g_eseGizmoDragStartValue = g_eseGizmoPosition.x;
+                    std::cout << "[ESE] Moving X axis" << std::endl;
+                } else if (inFrontY && distY < clickRadius) {
+                    if (!(g_eseQuadMode && g_eseExtrudeMode)) ese_save_undo_state();
+                    g_eseGizmoDragAxis = 1;
+                    g_eseGizmoDragging = true;
+                    g_eseGizmoScaling = false;
+                    g_eseGizmoRotating = false;
+                    g_eseGizmoDragStartMouse = mouseY;
+                    g_eseGizmoDragStartValue = g_eseGizmoPosition.y;
+                    std::cout << "[ESE] Moving Y axis" << std::endl;
+                } else if (inFrontZ && distZ < clickRadius) {
+                    if (!(g_eseQuadMode && g_eseExtrudeMode)) ese_save_undo_state();
+                    g_eseGizmoDragAxis = 2;
+                    g_eseGizmoDragging = true;
+                    g_eseGizmoScaling = false;
+                    g_eseGizmoRotating = false;
+                    g_eseGizmoDragStartMouse = mouseX;
+                    g_eseGizmoDragStartValue = g_eseGizmoPosition.z;
+                    std::cout << "[ESE] Moving Z axis" << std::endl;
+                }
+            }
+        }
+        
+        // Handle gizmo dragging (move, scale, or rotate)
+        if (g_eseGizmoDragging && leftDown && g_objMeshResource) {
+            float dragSpeed = 0.02f;  // Movement speed
+            float scaleSpeed = 0.005f;  // Scale speed (more sensitive)
+            float rotateSpeed = 0.01f;  // Rotation speed (radians per pixel)
+            float delta = 0.0f;
+            float scaleFactor = 1.0f;
+            float rotationAngle = 0.0f;
+            
+            if (g_eseGizmoRotating) {
+                // Rotation mode - use horizontal mouse movement (incremental)
+                rotationAngle = (float)(mouseX - g_eseGizmoDragStartMouse) * rotateSpeed;
+                g_eseGizmoDragStartMouse = mouseX;  // Reset for incremental rotation
+            } else if (g_eseGizmoScaling) {
+                // Scaling mode
+                if (g_eseGizmoDragAxis == 1) {
+                    delta = -(float)(mouseY - g_eseGizmoDragStartMouse) * scaleSpeed;
+                } else {
+                    delta = (float)(mouseX - g_eseGizmoDragStartMouse) * scaleSpeed;
+                }
+                scaleFactor = 1.0f + delta;
+                if (scaleFactor < 0.01f) scaleFactor = 0.01f;  // Prevent negative/zero scale
+            } else {
+                // Movement mode
+                if (g_eseGizmoDragAxis == 1) {
+                    delta = -(float)(mouseY - g_eseGizmoDragStartMouse) * dragSpeed;
+                } else {
+                    delta = (float)(mouseX - g_eseGizmoDragStartMouse) * dragSpeed;
+                }
+            }
+            
+            // Apply movement to selected vertices AND all vertices at the same positions
+            // This ensures the mesh stays connected (OBJ files often duplicate vertices)
+            std::vector<MeshVertex>& vertices = g_objMeshResource->getVerticesMutable();
+            const std::vector<uint32_t>& indices = g_objMeshResource->getIndices();
+            
+            // Collect target positions that need to be moved
+            std::vector<glm::vec3> targetPositions;
+            float tolerance = 0.0001f;
+            
+            if (g_eseVertexMode && !g_eseSelectedVertices.empty()) {
+                // Multi-selection: collect positions from ALL selected vertices
+                for (int vi : g_eseSelectedVertices) {
+                    if (vi >= 0 && vi < (int)vertices.size()) {
+                        targetPositions.push_back(glm::vec3(
+                            vertices[vi].pos[0],
+                            vertices[vi].pos[1],
+                            vertices[vi].pos[2]
+                        ));
+                    }
+                }
+            } else if (g_eseEdgeMode && !g_eseSelectedEdges.empty()) {
+                // Multi-selection: collect vertices from ALL selected quad edges
+                for (int edgeIdx : g_eseSelectedEdges) {
+                    if (edgeIdx >= 0 && edgeIdx < (int)g_eseQuadEdges.size()) {
+                        const QuadEdge& qe = g_eseQuadEdges[edgeIdx];
+                        if (qe.v0 < vertices.size() && qe.v1 < vertices.size()) {
+                            targetPositions.push_back(glm::vec3(vertices[qe.v0].pos[0], vertices[qe.v0].pos[1], vertices[qe.v0].pos[2]));
+                            targetPositions.push_back(glm::vec3(vertices[qe.v1].pos[0], vertices[qe.v1].pos[1], vertices[qe.v1].pos[2]));
+                        }
+                    }
+                }
+            } else if (g_eseFaceMode && g_eseSelectedFace >= 0) {
+                size_t triStart = g_eseSelectedFace * 3;
+                if (triStart + 2 < indices.size()) {
+                    for (int i = 0; i < 3; i++) {
+                        uint32_t vIdx = indices[triStart + i];
+                        targetPositions.push_back(glm::vec3(vertices[vIdx].pos[0], vertices[vIdx].pos[1], vertices[vIdx].pos[2]));
+                    }
+                }
+            } else if (g_eseQuadMode && g_eseSelectedQuad >= 0 && g_eseSelectedQuad < (int)g_eseReconstructedQuads.size()) {
+                // Check if we're in extrude mode
+                if (g_eseExtrudeMode && !g_eseExtrudeExecuted) {
+                    // Save undo state BEFORE modifying mesh
+                    ese_save_undo_state();
+                    
+                    // EXTRUDE: Create new geometry
+                    const auto& quad = g_eseReconstructedQuads[g_eseSelectedQuad];
+                    
+                    // Get original vertex positions
+                    glm::vec3 p0(vertices[quad[0]].pos[0], vertices[quad[0]].pos[1], vertices[quad[0]].pos[2]);
+                    glm::vec3 p1(vertices[quad[1]].pos[0], vertices[quad[1]].pos[1], vertices[quad[1]].pos[2]);
+                    glm::vec3 p2(vertices[quad[2]].pos[0], vertices[quad[2]].pos[1], vertices[quad[2]].pos[2]);
+                    glm::vec3 p3(vertices[quad[3]].pos[0], vertices[quad[3]].pos[1], vertices[quad[3]].pos[2]);
+                    
+                    // Calculate face normal for the new vertices
+                    glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+                    
+                    // Get mutable indices FIRST (before we modify vertices)
+                    std::vector<uint32_t>& mutableIndices = g_objMeshResource->getIndicesMutable();
+                    
+                    // DELETE ORIGINAL FACE: Find and remove triangles that use the quad's vertices
+                    std::set<uint32_t> quadVerts = {quad[0], quad[1], quad[2], quad[3]};
+                    std::vector<uint32_t> newIndices;
+                    newIndices.reserve(mutableIndices.size());
+                    
+                    for (size_t i = 0; i + 2 < mutableIndices.size(); i += 3) {
+                        uint32_t v0 = mutableIndices[i];
+                        uint32_t v1 = mutableIndices[i + 1];
+                        uint32_t v2 = mutableIndices[i + 2];
+                        
+                        // Check if all 3 vertices of this triangle are in the quad
+                        int matchCount = 0;
+                        if (quadVerts.count(v0)) matchCount++;
+                        if (quadVerts.count(v1)) matchCount++;
+                        if (quadVerts.count(v2)) matchCount++;
+                        
+                        // Keep triangle only if it's NOT part of the original quad face
+                        if (matchCount < 3) {
+                            newIndices.push_back(v0);
+                            newIndices.push_back(v1);
+                            newIndices.push_back(v2);
+                        }
+                    }
+                    
+                    mutableIndices = newIndices;
+                    std::cout << "[ESE] Removed original face triangles" << std::endl;
+                    
+                    // Create 4 new vertices (copies of original)
+                    uint32_t newIdx0 = (uint32_t)vertices.size();
+                    for (int i = 0; i < 4; i++) {
+                        MeshVertex newVert = vertices[quad[i]];
+                        // Set normal to face outward
+                        newVert.normal[0] = normal.x;
+                        newVert.normal[1] = normal.y;
+                        newVert.normal[2] = normal.z;
+                        vertices.push_back(newVert);
+                    }
+                    
+                    // Store extruded vertex indices for movement
+                    g_eseExtrudedVertices.clear();
+                    g_eseExtrudedVertices.push_back(newIdx0);
+                    g_eseExtrudedVertices.push_back(newIdx0 + 1);
+                    g_eseExtrudedVertices.push_back(newIdx0 + 2);
+                    g_eseExtrudedVertices.push_back(newIdx0 + 3);
+                    
+                    // Create 4 side quads (8 triangles) connecting original to new vertices
+                    // Side 0-1: quad[0] -> quad[1] -> newIdx0+1 -> newIdx0
+                    mutableIndices.push_back(quad[0]); mutableIndices.push_back(quad[1]); mutableIndices.push_back(newIdx0 + 1);
+                    mutableIndices.push_back(quad[0]); mutableIndices.push_back(newIdx0 + 1); mutableIndices.push_back(newIdx0);
+                    
+                    // Side 1-2: quad[1] -> quad[2] -> newIdx0+2 -> newIdx0+1
+                    mutableIndices.push_back(quad[1]); mutableIndices.push_back(quad[2]); mutableIndices.push_back(newIdx0 + 2);
+                    mutableIndices.push_back(quad[1]); mutableIndices.push_back(newIdx0 + 2); mutableIndices.push_back(newIdx0 + 1);
+                    
+                    // Side 2-3: quad[2] -> quad[3] -> newIdx0+3 -> newIdx0+2
+                    mutableIndices.push_back(quad[2]); mutableIndices.push_back(quad[3]); mutableIndices.push_back(newIdx0 + 3);
+                    mutableIndices.push_back(quad[2]); mutableIndices.push_back(newIdx0 + 3); mutableIndices.push_back(newIdx0 + 2);
+                    
+                    // Side 3-0: quad[3] -> quad[0] -> newIdx0 -> newIdx0+3
+                    mutableIndices.push_back(quad[3]); mutableIndices.push_back(quad[0]); mutableIndices.push_back(newIdx0);
+                    mutableIndices.push_back(quad[3]); mutableIndices.push_back(newIdx0); mutableIndices.push_back(newIdx0 + 3);
+                    
+                    // NEW TOP FACE: Create 2 triangles using the new vertices
+                    // This is the face that will move with the extrusion
+                    mutableIndices.push_back(newIdx0); mutableIndices.push_back(newIdx0 + 1); mutableIndices.push_back(newIdx0 + 2);
+                    mutableIndices.push_back(newIdx0); mutableIndices.push_back(newIdx0 + 2); mutableIndices.push_back(newIdx0 + 3);
+                    
+                    // Update the quad to use new vertices (top face)
+                    g_eseReconstructedQuads[g_eseSelectedQuad] = {newIdx0, newIdx0 + 1, newIdx0 + 2, newIdx0 + 3};
+                    
+                    g_eseExtrudeExecuted = true;
+                    std::cout << "[ESE] Extruded quad - created " << vertices.size() << " vertices, " 
+                              << mutableIndices.size() << " indices" << std::endl;
+                    
+                    // IMPORTANT: Rebuild GPU buffers immediately so new geometry is visible
+                    g_objMeshResource->rebuildBuffers();
+                    std::cout << "[ESE] GPU buffers rebuilt for extrusion" << std::endl;
+                }
+                
+                // Move extruded vertices (or normal quad movement if not extruding)
+                if (g_eseExtrudeMode && g_eseExtrudeExecuted) {
+                    // EXTRUDE: Move only the specific extruded vertex indices (NOT position-based)
+                    // This is critical because extruded vertices start at same position as originals
+                    for (uint32_t vi : g_eseExtrudedVertices) {
+                        if (vi < vertices.size()) {
+                            vertices[vi].pos[g_eseGizmoDragAxis] += delta * 0.5f;
+                        }
+                    }
+                    // Skip the normal position-based movement below
+                    g_eseGizmoDragStartMouse = (g_eseGizmoDragAxis == 1) ? mouseY : mouseX;
+                    g_esePropertiesModified = true;
+                } else {
+                    // Normal quad movement - multi-selection support
+                    for (int quadIdx : g_eseSelectedQuads) {
+                        if (quadIdx >= 0 && quadIdx < (int)g_eseReconstructedQuads.size()) {
+                            const auto& quad = g_eseReconstructedQuads[quadIdx];
+                            for (int i = 0; i < 4; i++) {
+                                targetPositions.push_back(glm::vec3(vertices[quad[i]].pos[0], vertices[quad[i]].pos[1], vertices[quad[i]].pos[2]));
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Find and move/scale/rotate ALL vertices at target positions (keeps mesh connected)
+            // Skip this if we already handled extrusion movement above
+            if (!(g_eseQuadMode && g_eseExtrudeMode && g_eseExtrudeExecuted)) {
+                for (size_t vi = 0; vi < vertices.size(); vi++) {
+                    glm::vec3 vPos(vertices[vi].pos[0], vertices[vi].pos[1], vertices[vi].pos[2]);
+                    
+                    for (const auto& targetPos : targetPositions) {
+                        if (glm::length(vPos - targetPos) < tolerance) {
+                            if (g_eseGizmoRotating) {
+                                // ROTATING: Rotate vertex around gizmo center on selected axis
+                                glm::vec3 relPos = vPos - g_eseGizmoPosition;
+                                float cosA = cosf(rotationAngle);
+                                float sinA = sinf(rotationAngle);
+                                glm::vec3 newPos;
+                                
+                                if (g_eseGizmoDragAxis == 0) {
+                                    // Rotate around X axis (affects Y and Z)
+                                    newPos.x = relPos.x;
+                                    newPos.y = relPos.y * cosA - relPos.z * sinA;
+                                    newPos.z = relPos.y * sinA + relPos.z * cosA;
+                                } else if (g_eseGizmoDragAxis == 1) {
+                                    // Rotate around Y axis (affects X and Z)
+                                    newPos.x = relPos.x * cosA + relPos.z * sinA;
+                                    newPos.y = relPos.y;
+                                    newPos.z = -relPos.x * sinA + relPos.z * cosA;
+                                } else {
+                                    // Rotate around Z axis (affects X and Y)
+                                    newPos.x = relPos.x * cosA - relPos.y * sinA;
+                                    newPos.y = relPos.x * sinA + relPos.y * cosA;
+                                    newPos.z = relPos.z;
+                                }
+                                
+                                newPos += g_eseGizmoPosition;
+                                vertices[vi].pos[0] = newPos.x;
+                                vertices[vi].pos[1] = newPos.y;
+                                vertices[vi].pos[2] = newPos.z;
+                            } else if (g_eseGizmoScaling) {
+                                // SCALING: Scale vertex position relative to gizmo center on selected axis
+                                float offset = vertices[vi].pos[g_eseGizmoDragAxis] - g_eseGizmoPosition[g_eseGizmoDragAxis];
+                                vertices[vi].pos[g_eseGizmoDragAxis] = g_eseGizmoPosition[g_eseGizmoDragAxis] + offset * scaleFactor;
+                            } else {
+                                // MOVING: Move vertex along axis
+                                vertices[vi].pos[g_eseGizmoDragAxis] += delta * 0.5f;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Update selected vertex position for display
+            if (g_eseVertexMode && g_eseSelectedVertex >= 0 && g_eseSelectedVertex < (int)vertices.size()) {
+                g_eseSelectedVertexPos = glm::vec3(
+                    vertices[g_eseSelectedVertex].pos[0],
+                    vertices[g_eseSelectedVertex].pos[1],
+                    vertices[g_eseSelectedVertex].pos[2]
+                );
+            }
+            
+            // Reset mouse position for next frame (rotation always uses X, others depend on axis)
+            if (g_eseGizmoRotating) {
+                g_eseGizmoDragStartMouse = mouseX;  // Rotation uses horizontal movement
+            } else {
+                g_eseGizmoDragStartMouse = (g_eseGizmoDragAxis == 1) ? mouseY : mouseX;
+            }
+            g_esePropertiesModified = true;
+        }
+        
+        // Release gizmo drag
+        if (!leftDown && g_eseGizmoDragging) {
+            g_eseGizmoDragging = false;
+            g_eseGizmoDragAxis = -1;
+            g_eseGizmoScaling = false;
+            g_eseGizmoRotating = false;
+            std::cout << "[ESE] Drag complete" << std::endl;
+            
+            // Rebuild mesh buffers with new vertex positions
+            if (g_objMeshResource) {
+                g_objMeshResource->rebuildBuffers();
+            }
+            
+            // Reset extrude mode after operation
+            if (g_eseExtrudeMode && g_eseExtrudeExecuted) {
+                g_eseExtrudeMode = false;
+                g_eseExtrudeExecuted = false;
+                g_eseExtrudedVertices.clear();
+                // Force quad reconstruction on next frame by clearing selection
+                g_eseSelectedQuad = -1;
+                std::cout << "[ESE] Extrude complete - mode reset, select a new quad" << std::endl;
+            }
+        }
+        
+        // Left-click drag: rotate camera (orbit) - only if not dragging gizmo
+        // In vertex mode, single click selects vertex (no drag)
+        if (leftDown && g_eseLeftMouseDown && !g_eseGizmoDragging) {
+            float rotationSpeed = 0.3f;
+            g_eseCameraYaw -= (float)deltaX * rotationSpeed;
+            g_eseCameraPitch += (float)deltaY * rotationSpeed;
+            
+            // Clamp pitch to prevent flipping
+            if (g_eseCameraPitch > 89.0f) g_eseCameraPitch = 89.0f;
+            if (g_eseCameraPitch < -89.0f) g_eseCameraPitch = -89.0f;
+        }
+        
+        // Vertex selection on left-click release (in vertex mode)
+        if (!leftDown && g_eseLeftMouseDown && g_eseVertexMode && g_eseModelLoaded && g_objMeshResource) {
+            // Only select if this was a click (not a drag)
+            if (fabs(deltaX) < 3.0 && fabs(deltaY) < 3.0) {
+                // Perform vertex picking
+                // Get camera matrices for raycasting
+                float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
+                float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
+                if (pitchRad > 1.5f) pitchRad = 1.5f;
+                if (pitchRad < -1.5f) pitchRad = -1.5f;
+                
+                float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
+                float camY = g_eseCameraDistance * sinf(pitchRad);
+                float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
+                
+                glm::vec3 cameraPos(
+                    camX + g_eseCameraTargetX + g_eseCameraPanX,
+                    camY + g_eseCameraTargetY + g_eseCameraPanY,
+                    camZ + g_eseCameraTargetZ
+                );
+                glm::vec3 targetPos(
+                    g_eseCameraTargetX + g_eseCameraPanX,
+                    g_eseCameraTargetY + g_eseCameraPanY,
+                    g_eseCameraTargetZ
+                );
+                
+                glm::mat4 viewMat = glm::lookAt(cameraPos, targetPos, glm::vec3(0.0f, 1.0f, 0.0f));
+                float fov = 45.0f * 3.14159f / 180.0f;
+                float aspect = (float)g_swapchainExtent.width / (float)g_swapchainExtent.height;
+                glm::mat4 projMat = glm::perspectiveRH_ZO(fov, aspect, 0.1f, 100.0f);
+                projMat[1][1] *= -1.0f;  // Vulkan Y flip
+                
+                // Get ray from mouse position
+                float ndcX = (2.0f * (float)mouseX / g_swapchainExtent.width) - 1.0f;
+                float ndcY = (2.0f * (float)mouseY / g_swapchainExtent.height) - 1.0f;
+                
+                glm::vec4 rayClip(ndcX, ndcY, -1.0f, 1.0f);
+                glm::mat4 invProj = glm::inverse(projMat);
+                glm::vec4 rayEye = invProj * rayClip;
+                rayEye = glm::vec4(rayEye.x, rayEye.y, -1.0f, 0.0f);
+                
+                glm::mat4 invView = glm::inverse(viewMat);
+                glm::vec4 rayWorld4 = invView * rayEye;
+                glm::vec3 rayDir = glm::normalize(glm::vec3(rayWorld4));
+                
+                // Find closest vertex to ray
+                float closestDist = FLT_MAX;
+                int closestVertex = -1;
+                glm::vec3 closestPos(0.0f);
+                
+                // Get vertex data from mesh resource
+                const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+                for (size_t i = 0; i < vertices.size(); i++) {
+                    glm::vec3 vertPos(vertices[i].pos[0], vertices[i].pos[1], vertices[i].pos[2]);
+                    
+                    // Calculate distance from vertex to ray
+                    glm::vec3 toVert = vertPos - cameraPos;
+                    float t = glm::dot(toVert, rayDir);
+                    if (t > 0) {  // Vertex is in front of camera
+                        glm::vec3 closestPointOnRay = cameraPos + rayDir * t;
+                        float distToRay = glm::length(vertPos - closestPointOnRay);
+                        
+                        // Use screen-space distance threshold (scale with distance)
+                        float threshold = 0.05f * (t / g_eseCameraDistance);
+                        if (distToRay < threshold && distToRay < closestDist) {
+                            closestDist = distToRay;
+                            closestVertex = (int)i;
+                            closestPos = vertPos;
+                        }
+                    }
+                }
+                
+                if (closestVertex >= 0) {
+                    if (ctrlPressed) {
+                        // Ctrl+click: Toggle vertex in multi-selection
+                        if (g_eseSelectedVertices.count(closestVertex)) {
+                            g_eseSelectedVertices.erase(closestVertex);
+                            std::cout << "[ESE] Removed vertex " << closestVertex << " from selection (" 
+                                      << g_eseSelectedVertices.size() << " selected)" << std::endl;
+                        } else {
+                            g_eseSelectedVertices.insert(closestVertex);
+                            std::cout << "[ESE] Added vertex " << closestVertex << " to selection (" 
+                                      << g_eseSelectedVertices.size() << " selected)" << std::endl;
+                        }
+                        // Also set as primary selection for gizmo
+                        g_eseSelectedVertex = closestVertex;
+                        g_eseSelectedVertexPos = closestPos;
+                    } else {
+                        // Normal click: Clear multi-selection and select single
+                        g_eseSelectedVertices.clear();
+                        g_eseSelectedVertices.insert(closestVertex);
+                        g_eseSelectedVertex = closestVertex;
+                        g_eseSelectedVertexPos = closestPos;
+                        std::cout << "[ESE] Selected vertex " << closestVertex << " at (" 
+                                  << closestPos.x << ", " << closestPos.y << ", " << closestPos.z << ")" << std::endl;
+                    }
+                    
+                    // Check if this vertex is a connection point
+                    for (size_t i = 0; i < g_eseConnectionPoints.size(); i++) {
+                        if (g_eseConnectionPoints[i].vertex_index == closestVertex) {
+                            g_eseSelectedConnectionPoint = (int)i;
+                            g_eseShowConnectionPointWindow = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Edge selection on left-click release (in edge mode)
+        if (!leftDown && g_eseLeftMouseDown && g_eseEdgeMode && g_eseModelLoaded && g_objMeshResource) {
+            if (fabs(deltaX) < 3.0 && fabs(deltaY) < 3.0) {
+                // Get camera and ray setup
+                float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
+                float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
+                if (pitchRad > 1.5f) pitchRad = 1.5f;
+                if (pitchRad < -1.5f) pitchRad = -1.5f;
+                
+                float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
+                float camY = g_eseCameraDistance * sinf(pitchRad);
+                float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
+                
+                glm::vec3 cameraPos(
+                    camX + g_eseCameraTargetX + g_eseCameraPanX,
+                    camY + g_eseCameraTargetY + g_eseCameraPanY,
+                    camZ + g_eseCameraTargetZ
+                );
+                glm::vec3 targetPos(
+                    g_eseCameraTargetX + g_eseCameraPanX,
+                    g_eseCameraTargetY + g_eseCameraPanY,
+                    g_eseCameraTargetZ
+                );
+                
+                glm::mat4 viewMat = glm::lookAt(cameraPos, targetPos, glm::vec3(0.0f, 1.0f, 0.0f));
+                float fov = 45.0f * 3.14159f / 180.0f;
+                float aspect = (float)g_swapchainExtent.width / (float)g_swapchainExtent.height;
+                glm::mat4 projMat = glm::perspectiveRH_ZO(fov, aspect, 0.1f, 100.0f);
+                projMat[1][1] *= -1.0f;
+                
+                float ndcX = (2.0f * (float)mouseX / g_swapchainExtent.width) - 1.0f;
+                float ndcY = (2.0f * (float)mouseY / g_swapchainExtent.height) - 1.0f;
+                
+                glm::vec4 rayClip(ndcX, ndcY, -1.0f, 1.0f);
+                glm::mat4 invProj = glm::inverse(projMat);
+                glm::vec4 rayEye = invProj * rayClip;
+                rayEye = glm::vec4(rayEye.x, rayEye.y, -1.0f, 0.0f);
+                
+                glm::mat4 invView = glm::inverse(viewMat);
+                glm::vec4 rayWorld4 = invView * rayEye;
+                glm::vec3 rayDir = glm::normalize(glm::vec3(rayWorld4));
+                
+                // Find closest QUAD edge to ray (not triangle edges)
+                const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+                
+                float closestDist = FLT_MAX;
+                int closestEdge = -1;
+                
+                for (size_t ei = 0; ei < g_eseQuadEdges.size(); ei++) {
+                    const QuadEdge& qe = g_eseQuadEdges[ei];
+                    
+                    if (qe.v0 >= vertices.size() || qe.v1 >= vertices.size()) continue;
+                    
+                    glm::vec3 p0(vertices[qe.v0].pos[0], vertices[qe.v0].pos[1], vertices[qe.v0].pos[2]);
+                    glm::vec3 p1(vertices[qe.v1].pos[0], vertices[qe.v1].pos[1], vertices[qe.v1].pos[2]);
+                    glm::vec3 edgeMid = (p0 + p1) * 0.5f;
+                    
+                    // Backface culling: check if any quad containing this edge is visible
+                    bool anyQuadVisible = false;
+                    for (int qi : qe.quadIndices) {
+                        if (qi >= 0 && qi < (int)g_eseReconstructedQuads.size()) {
+                            const auto& quad = g_eseReconstructedQuads[qi];
+                            glm::vec3 qp0(vertices[quad[0]].pos[0], vertices[quad[0]].pos[1], vertices[quad[0]].pos[2]);
+                            glm::vec3 qp1(vertices[quad[1]].pos[0], vertices[quad[1]].pos[1], vertices[quad[1]].pos[2]);
+                            glm::vec3 qp2(vertices[quad[2]].pos[0], vertices[quad[2]].pos[1], vertices[quad[2]].pos[2]);
+                            glm::vec3 qp3(vertices[quad[3]].pos[0], vertices[quad[3]].pos[1], vertices[quad[3]].pos[2]);
+                            glm::vec3 center = (qp0 + qp1 + qp2 + qp3) * 0.25f;
+                            glm::vec3 normal = glm::normalize(glm::cross(qp1 - qp0, qp2 - qp0));
+                            if (glm::dot(normal, glm::normalize(cameraPos - center)) > 0.0f) {
+                                anyQuadVisible = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (!anyQuadVisible) continue;
+                    
+                    // Distance from ray to edge midpoint
+                    glm::vec3 toMid = edgeMid - cameraPos;
+                    float t = glm::dot(toMid, rayDir);
+                    if (t > 0) {
+                        glm::vec3 closestPointOnRay = cameraPos + rayDir * t;
+                        float distToRay = glm::length(edgeMid - closestPointOnRay);
+                        
+                        float threshold = 0.08f * (t / g_eseCameraDistance);
+                        if (distToRay < threshold && distToRay < closestDist) {
+                            closestDist = distToRay;
+                            closestEdge = (int)ei;
+                        }
+                    }
+                }
+                
+                if (closestEdge >= 0) {
+                    if (ctrlPressed) {
+                        // Ctrl+click: Toggle edge in multi-selection
+                        if (g_eseSelectedEdges.count(closestEdge)) {
+                            g_eseSelectedEdges.erase(closestEdge);
+                            std::cout << "[ESE] Removed edge " << closestEdge << " from selection (" 
+                                      << g_eseSelectedEdges.size() << " selected)" << std::endl;
+                        } else {
+                            g_eseSelectedEdges.insert(closestEdge);
+                            std::cout << "[ESE] Added edge " << closestEdge << " to selection (" 
+                                      << g_eseSelectedEdges.size() << " selected)" << std::endl;
+                        }
+                        g_eseSelectedEdge = closestEdge;
+                    } else {
+                        // Normal click: Clear multi-selection and select single
+                        g_eseSelectedEdges.clear();
+                        g_eseSelectedEdges.insert(closestEdge);
+                        g_eseSelectedEdge = closestEdge;
+                        std::cout << "[ESE] Selected edge " << closestEdge << std::endl;
+                    }
+                }
+            }
+        }
+        
+        // Face selection on left-click release (in face mode)
+        if (!leftDown && g_eseLeftMouseDown && g_eseFaceMode && g_eseModelLoaded && g_objMeshResource) {
+            if (fabs(deltaX) < 3.0 && fabs(deltaY) < 3.0) {
+                // Get camera and ray setup
+                float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
+                float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
+                if (pitchRad > 1.5f) pitchRad = 1.5f;
+                if (pitchRad < -1.5f) pitchRad = -1.5f;
+                
+                float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
+                float camY = g_eseCameraDistance * sinf(pitchRad);
+                float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
+                
+                glm::vec3 cameraPos(
+                    camX + g_eseCameraTargetX + g_eseCameraPanX,
+                    camY + g_eseCameraTargetY + g_eseCameraPanY,
+                    camZ + g_eseCameraTargetZ
+                );
+                glm::vec3 targetPos(
+                    g_eseCameraTargetX + g_eseCameraPanX,
+                    g_eseCameraTargetY + g_eseCameraPanY,
+                    g_eseCameraTargetZ
+                );
+                
+                glm::mat4 viewMat = glm::lookAt(cameraPos, targetPos, glm::vec3(0.0f, 1.0f, 0.0f));
+                float fov = 45.0f * 3.14159f / 180.0f;
+                float aspect = (float)g_swapchainExtent.width / (float)g_swapchainExtent.height;
+                glm::mat4 projMat = glm::perspectiveRH_ZO(fov, aspect, 0.1f, 100.0f);
+                projMat[1][1] *= -1.0f;
+                
+                float ndcX = (2.0f * (float)mouseX / g_swapchainExtent.width) - 1.0f;
+                float ndcY = (2.0f * (float)mouseY / g_swapchainExtent.height) - 1.0f;
+                
+                glm::vec4 rayClip(ndcX, ndcY, -1.0f, 1.0f);
+                glm::mat4 invProj = glm::inverse(projMat);
+                glm::vec4 rayEye = invProj * rayClip;
+                rayEye = glm::vec4(rayEye.x, rayEye.y, -1.0f, 0.0f);
+                
+                glm::mat4 invView = glm::inverse(viewMat);
+                glm::vec4 rayWorld4 = invView * rayEye;
+                glm::vec3 rayDir = glm::normalize(glm::vec3(rayWorld4));
+                
+                // Find closest face (ray-triangle intersection)
+                const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+                const std::vector<uint32_t>& indices = g_objMeshResource->getIndices();
+                
+                float closestT = FLT_MAX;
+                int closestFace = -1;
+                
+                size_t numFaces = indices.size() / 3;
+                for (size_t faceIdx = 0; faceIdx < numFaces; faceIdx++) {
+                    size_t triStart = faceIdx * 3;
+                    if (triStart + 2 >= indices.size()) break;
+                    
+                    glm::vec3 v0(vertices[indices[triStart]].pos[0], vertices[indices[triStart]].pos[1], vertices[indices[triStart]].pos[2]);
+                    glm::vec3 v1(vertices[indices[triStart + 1]].pos[0], vertices[indices[triStart + 1]].pos[1], vertices[indices[triStart + 1]].pos[2]);
+                    glm::vec3 v2(vertices[indices[triStart + 2]].pos[0], vertices[indices[triStart + 2]].pos[1], vertices[indices[triStart + 2]].pos[2]);
+                    
+                    // Backface culling
+                    glm::vec3 faceNormal = glm::normalize(glm::cross(v1 - v0, v2 - v0));
+                    glm::vec3 faceCenter = (v0 + v1 + v2) / 3.0f;
+                    if (glm::dot(faceNormal, glm::normalize(cameraPos - faceCenter)) <= 0.0f) continue;
+                    
+                    // Moller-Trumbore ray-triangle intersection
+                    glm::vec3 edge1 = v1 - v0;
+                    glm::vec3 edge2 = v2 - v0;
+                    glm::vec3 h = glm::cross(rayDir, edge2);
+                    float a = glm::dot(edge1, h);
+                    
+                    if (fabs(a) < 0.0001f) continue;  // Ray parallel to triangle
+                    
+                    float f = 1.0f / a;
+                    glm::vec3 s = cameraPos - v0;
+                    float u = f * glm::dot(s, h);
+                    
+                    if (u < 0.0f || u > 1.0f) continue;
+                    
+                    glm::vec3 q = glm::cross(s, edge1);
+                    float v = f * glm::dot(rayDir, q);
+                    
+                    if (v < 0.0f || u + v > 1.0f) continue;
+                    
+                    float t = f * glm::dot(edge2, q);
+                    
+                    if (t > 0.001f && t < closestT) {
+                        closestT = t;
+                        closestFace = (int)faceIdx;
+                    }
+                }
+                
+                if (closestFace >= 0) {
+                    g_eseSelectedFace = closestFace;
+                    std::cout << "[ESE] Selected face " << closestFace << std::endl;
+                }
+            }
+        }
+        
+        // Quad selection on left-click release (in quad mode)
+        if (!leftDown && g_eseLeftMouseDown && g_eseQuadMode && g_eseModelLoaded && g_objMeshResource) {
+            if (fabs(deltaX) < 3.0 && fabs(deltaY) < 3.0) {
+                // Use reconstructed quads from visualization (global variable)
+                
+                // Get camera setup
+                float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
+                float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
+                if (pitchRad > 1.5f) pitchRad = 1.5f;
+                if (pitchRad < -1.5f) pitchRad = -1.5f;
+                
+                float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
+                float camY = g_eseCameraDistance * sinf(pitchRad);
+                float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
+                
+                glm::vec3 cameraPos(
+                    camX + g_eseCameraTargetX + g_eseCameraPanX,
+                    camY + g_eseCameraTargetY + g_eseCameraPanY,
+                    camZ + g_eseCameraTargetZ
+                );
+                glm::vec3 targetPos(
+                    g_eseCameraTargetX + g_eseCameraPanX,
+                    g_eseCameraTargetY + g_eseCameraPanY,
+                    g_eseCameraTargetZ
+                );
+                
+                glm::mat4 viewMat = glm::lookAt(cameraPos, targetPos, glm::vec3(0.0f, 1.0f, 0.0f));
+                float fov = 45.0f * 3.14159f / 180.0f;
+                float aspect = (float)g_swapchainExtent.width / (float)g_swapchainExtent.height;
+                glm::mat4 projMat = glm::perspectiveRH_ZO(fov, aspect, 0.1f, 100.0f);
+                projMat[1][1] *= -1.0f;
+                
+                float ndcX = (2.0f * (float)mouseX / g_swapchainExtent.width) - 1.0f;
+                float ndcY = (2.0f * (float)mouseY / g_swapchainExtent.height) - 1.0f;
+                
+                glm::vec4 rayClip(ndcX, ndcY, -1.0f, 1.0f);
+                glm::mat4 invProj = glm::inverse(projMat);
+                glm::vec4 rayEye = invProj * rayClip;
+                rayEye = glm::vec4(rayEye.x, rayEye.y, -1.0f, 0.0f);
+                
+                glm::mat4 invView = glm::inverse(viewMat);
+                glm::vec4 rayWorld4 = invView * rayEye;
+                glm::vec3 rayDir = glm::normalize(glm::vec3(rayWorld4));
+                
+                const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+                
+                // Find closest quad (ray-quad intersection)
+                float closestT = FLT_MAX;
+                int closestQuad = -1;
+                
+                for (size_t qi = 0; qi < g_eseReconstructedQuads.size(); qi++) {
+                    const auto& quad = g_eseReconstructedQuads[qi];
+                    
+                    glm::vec3 p0(vertices[quad[0]].pos[0], vertices[quad[0]].pos[1], vertices[quad[0]].pos[2]);
+                    glm::vec3 p1(vertices[quad[1]].pos[0], vertices[quad[1]].pos[1], vertices[quad[1]].pos[2]);
+                    glm::vec3 p2(vertices[quad[2]].pos[0], vertices[quad[2]].pos[1], vertices[quad[2]].pos[2]);
+                    glm::vec3 p3(vertices[quad[3]].pos[0], vertices[quad[3]].pos[1], vertices[quad[3]].pos[2]);
+                    
+                    // Backface culling
+                    glm::vec3 center = (p0 + p1 + p2 + p3) * 0.25f;
+                    glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+                    if (glm::dot(normal, glm::normalize(cameraPos - center)) <= 0.0f) continue;
+                    
+                    // Test two triangles that make up the quad
+                    auto testTriangle = [&](glm::vec3 v0, glm::vec3 v1, glm::vec3 v2) -> float {
+                        glm::vec3 edge1 = v1 - v0;
+                        glm::vec3 edge2 = v2 - v0;
+                        glm::vec3 h = glm::cross(rayDir, edge2);
+                        float a = glm::dot(edge1, h);
+                        if (fabs(a) < 0.0001f) return FLT_MAX;
+                        float f = 1.0f / a;
+                        glm::vec3 s = cameraPos - v0;
+                        float u = f * glm::dot(s, h);
+                        if (u < 0.0f || u > 1.0f) return FLT_MAX;
+                        glm::vec3 q = glm::cross(s, edge1);
+                        float v = f * glm::dot(rayDir, q);
+                        if (v < 0.0f || u + v > 1.0f) return FLT_MAX;
+                        float t = f * glm::dot(edge2, q);
+                        return (t > 0.001f) ? t : FLT_MAX;
+                    };
+                    
+                    float t1 = testTriangle(p0, p1, p2);
+                    float t2 = testTriangle(p0, p2, p3);
+                    float t = std::min(t1, t2);
+                    
+                    if (t < closestT) {
+                        closestT = t;
+                        closestQuad = (int)qi;
+                    }
+                }
+                
+                if (closestQuad >= 0) {
+                    if (ctrlPressed) {
+                        // Ctrl+click: Toggle quad in multi-selection
+                        if (g_eseSelectedQuads.count(closestQuad)) {
+                            g_eseSelectedQuads.erase(closestQuad);
+                            std::cout << "[ESE] Removed quad " << closestQuad << " from selection (" 
+                                      << g_eseSelectedQuads.size() << " selected)" << std::endl;
+                        } else {
+                            g_eseSelectedQuads.insert(closestQuad);
+                            std::cout << "[ESE] Added quad " << closestQuad << " to selection (" 
+                                      << g_eseSelectedQuads.size() << " selected)" << std::endl;
+                        }
+                        g_eseSelectedQuad = closestQuad;
+                    } else {
+                        // Normal click: Clear multi-selection and select single
+                        g_eseSelectedQuads.clear();
+                        g_eseSelectedQuads.insert(closestQuad);
+                        g_eseSelectedQuad = closestQuad;
+                        std::cout << "[ESE] Selected quad " << closestQuad << std::endl;
+                    }
+                }
+            }
+        }
+        
+        // Right-click drag: pan camera
+        if (rightDown && g_eseRightMouseDown) {
+            float panSpeed = 0.01f * g_eseCameraDistance;  // Scale with zoom
+            g_eseCameraPanX -= (float)deltaX * panSpeed;
+            g_eseCameraPanY += (float)deltaY * panSpeed;
+        }
+        
+        // Mouse wheel: zoom in/out
+        if (g_eseScrollDelta != 0.0f) {
+            float zoomSpeed = 0.5f;
+            g_eseCameraDistance -= g_eseScrollDelta * zoomSpeed;
+            
+            // Clamp distance to reasonable range
+            if (g_eseCameraDistance < 0.5f) g_eseCameraDistance = 0.5f;
+            if (g_eseCameraDistance > 50.0f) g_eseCameraDistance = 50.0f;
+            
+            g_eseScrollDelta = 0.0f;  // Consume the scroll delta
+        }
+    } else {
+        // ImGui wants mouse, consume scroll delta so it doesn't accumulate
+        g_eseScrollDelta = 0.0f;
+    }
+    
+    // Update button states for next frame
+    g_eseLeftMouseDown = leftDown;
+    g_eseRightMouseDown = rightDown;
+    g_eseLastMouseX = mouseX;
+    g_eseLastMouseY = mouseY;
     
 #ifdef USE_IMGUI
     // Start ImGui frame
@@ -8636,9 +10891,76 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
             }
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Create")) {
+            if (ImGui::MenuItem("Cube")) {
+                if (ese_create_cube_mesh(window)) {
+                    std::cout << "[ESE] Cube created successfully" << std::endl;
+                } else {
+                    std::cerr << "[ESE] Failed to create cube" << std::endl;
+                }
+            }
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Wireframe", nullptr, false, false);
-            ImGui::MenuItem("Normals", nullptr, false, false);
+            if (ImGui::MenuItem("Reset Camera", "Home")) {
+                g_eseCameraYaw = 45.0f;
+                g_eseCameraPitch = 30.0f;
+                g_eseCameraDistance = 5.0f;
+                g_eseCameraPanX = 0.0f;
+                g_eseCameraPanY = 0.0f;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Wireframe", nullptr, &g_eseWireframeMode, g_eseModelLoaded)) {
+                // Menu item handles the toggle automatically via &g_eseWireframeMode
+            }
+            if (ImGui::MenuItem("Vertex Mode", "1", &g_eseVertexMode, g_eseModelLoaded)) {
+                if (g_eseVertexMode) {
+                    g_eseEdgeMode = false;
+                    g_eseFaceMode = false;
+                    std::cout << "[ESE] Vertex mode enabled" << std::endl;
+                } else {
+                    g_eseSelectedVertex = -1;
+                }
+            }
+            if (ImGui::MenuItem("Edge Mode", "2", &g_eseEdgeMode, g_eseModelLoaded)) {
+                if (g_eseEdgeMode) {
+                    g_eseVertexMode = false;
+                    g_eseFaceMode = false;
+                    std::cout << "[ESE] Edge mode enabled" << std::endl;
+                } else {
+                    g_eseSelectedEdge = -1;
+                }
+            }
+            if (ImGui::MenuItem("Face Mode", "3", &g_eseFaceMode, g_eseModelLoaded)) {
+                if (g_eseFaceMode) {
+                    g_eseVertexMode = false;
+                    g_eseEdgeMode = false;
+                    g_eseQuadMode = false;
+                    std::cout << "[ESE] Face mode enabled" << std::endl;
+                } else {
+                    g_eseSelectedFace = -1;
+                }
+            }
+            if (ImGui::MenuItem("Quad Mode", "4", &g_eseQuadMode, g_eseModelLoaded)) {
+                if (g_eseQuadMode) {
+                    g_eseVertexMode = false;
+                    g_eseEdgeMode = false;
+                    g_eseFaceMode = false;
+                    std::cout << "[ESE] Quad mode enabled" << std::endl;
+                } else {
+                    g_eseSelectedQuad = -1;
+                }
+            }
+            if (ImGui::MenuItem("Show Normals", nullptr, &g_eseShowNormals, g_eseModelLoaded)) {
+                // Menu item handles the toggle automatically via &g_eseShowNormals
+            }
+            if (ImGui::MenuItem("Show Quads", nullptr, &g_eseShowQuads, g_eseModelLoaded)) {
+                // Reconstructs and shows quads from triangle pairs
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Connection Points...", nullptr, nullptr, g_eseModelLoaded)) {
+                g_eseShowConnectionPointWindow = true;
+            }
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Help")) {
@@ -8712,6 +11034,13 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
         if (ImGui::Checkbox("Is Salvaged", &g_eseHdmProperties.item.is_salvaged)) {
             g_esePropertiesModified = true;
         }
+        
+        ImGui::Separator();
+        
+        ImGui::Text("Mesh Class:");
+        if (ImGui::Combo("##mesh_class", &g_eseHdmProperties.item.mesh_class, g_meshClassNames, IM_ARRAYSIZE(g_meshClassNames))) {
+            g_esePropertiesModified = true;
+        }
     }
     ImGui::End();
     
@@ -8744,6 +11073,1220 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
         }
     }
     ImGui::End();
+    
+    // Connection Point Properties Window
+    if (g_eseShowConnectionPointWindow) {
+        ImGui::SetNextWindowPos(ImVec2((float)g_swapchainExtent.width / 2 - 200, (float)g_swapchainExtent.height / 2 - 200), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Connection Points", &g_eseShowConnectionPointWindow)) {
+            
+            // List all connection points
+            ImGui::Text("Connection Points (%zu):", g_eseConnectionPoints.size());
+            ImGui::Separator();
+            
+            if (g_eseConnectionPoints.empty()) {
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No connection points defined.");
+                ImGui::Text("To create a connection point:");
+                ImGui::BulletText("Press 1 to enter Vertex Mode");
+                ImGui::BulletText("Click to select a vertex");
+                ImGui::BulletText("Press Ctrl+Enter to create");
+            } else {
+                // Show list of connection points
+                ImGui::BeginChild("ConnectionPointList", ImVec2(0, 120), true);
+                for (size_t i = 0; i < g_eseConnectionPoints.size(); i++) {
+                    const ConnectionPoint& cp = g_eseConnectionPoints[i];
+                    char label[128];
+                    snprintf(label, sizeof(label), "%s [V:%d] (%s)##cplist_%zu", 
+                             cp.name, cp.vertex_index, 
+                             g_connectionTypeNames[cp.connection_type], i);
+                    
+                    bool isSelected = (g_eseSelectedConnectionPoint == (int)i);
+                    if (ImGui::Selectable(label, isSelected)) {
+                        g_eseSelectedConnectionPoint = (int)i;
+                    }
+                }
+                ImGui::EndChild();
+            }
+            
+            ImGui::Separator();
+            
+            // Show selected connection point properties
+            if (g_eseSelectedConnectionPoint >= 0 && 
+                g_eseSelectedConnectionPoint < (int)g_eseConnectionPoints.size()) {
+                
+                ConnectionPoint& cp = g_eseConnectionPoints[g_eseSelectedConnectionPoint];
+            
+            ImGui::Text("Name:");
+            if (ImGui::InputText("##cp_name", cp.name, sizeof(cp.name))) {
+                g_esePropertiesModified = true;
+            }
+            
+            ImGui::Separator();
+            
+            ImGui::Text("Vertex Information:");
+            ImGui::Text("  Vertex Number: %d", cp.vertex_index);
+            ImGui::Text("  Position X: %.6f", cp.position[0]);
+            ImGui::Text("  Position Y: %.6f", cp.position[1]);
+            ImGui::Text("  Position Z: %.6f", cp.position[2]);
+            
+            ImGui::Separator();
+            
+            ImGui::Text("Connection Type:");
+            if (ImGui::Combo("##cp_type", &cp.connection_type, g_connectionTypeNames, IM_ARRAYSIZE(g_connectionTypeNames))) {
+                g_esePropertiesModified = true;
+            }
+            
+            ImGui::Separator();
+            
+            ImGui::Text("Connected Mesh:");
+            if (ImGui::InputText("##cp_mesh", cp.connected_mesh, sizeof(cp.connected_mesh))) {
+                g_esePropertiesModified = true;
+            }
+            
+            ImGui::Text("Connected Mesh Class:");
+            if (ImGui::InputText("##cp_mesh_class", cp.connected_mesh_class, sizeof(cp.connected_mesh_class))) {
+                g_esePropertiesModified = true;
+            }
+            
+            ImGui::Separator();
+            
+                if (ImGui::Button("Delete")) {
+                    g_eseConnectionPoints.erase(g_eseConnectionPoints.begin() + g_eseSelectedConnectionPoint);
+                    if (g_eseSelectedConnectionPoint >= (int)g_eseConnectionPoints.size()) {
+                        g_eseSelectedConnectionPoint = (int)g_eseConnectionPoints.size() - 1;
+                    }
+                    g_esePropertiesModified = true;
+                }
+            } else if (!g_eseConnectionPoints.empty()) {
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Select a connection point above to edit");
+            }
+            
+            ImGui::Separator();
+            if (ImGui::Button("Close")) {
+                g_eseShowConnectionPointWindow = false;
+            }
+        }
+        ImGui::End();
+    }
+    
+    // Vertex Info Panel (only visible in vertex mode)
+    if (g_eseVertexMode) {
+        ImGui::SetNextWindowPos(ImVec2((float)g_swapchainExtent.width - 330, 30), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(320, 200), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Vertex Info")) {
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "VERTEX MODE ACTIVE");
+            ImGui::Text("Click to select, Ctrl+click to multi-select");
+            ImGui::Separator();
+            
+            if (!g_eseSelectedVertices.empty()) {
+                ImGui::Text("Selected: %zu vertices", g_eseSelectedVertices.size());
+                if (g_eseSelectedVertex >= 0) {
+                    ImGui::Text("Primary: Vertex %d", g_eseSelectedVertex);
+                ImGui::Separator();
+                ImGui::Text("Position:");
+                ImGui::Text("  X: %.6f", g_eseSelectedVertexPos.x);
+                ImGui::Text("  Y: %.6f", g_eseSelectedVertexPos.y);
+                ImGui::Text("  Z: %.6f", g_eseSelectedVertexPos.z);
+                
+                // Show vertex data from mesh if available
+                if (g_objMeshResource) {
+                    const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+                    if (g_eseSelectedVertex < (int)vertices.size()) {
+                        ImGui::Separator();
+                        ImGui::Text("Normal:");
+                        ImGui::Text("  X: %.4f", vertices[g_eseSelectedVertex].normal[0]);
+                        ImGui::Text("  Y: %.4f", vertices[g_eseSelectedVertex].normal[1]);
+                        ImGui::Text("  Z: %.4f", vertices[g_eseSelectedVertex].normal[2]);
+                        ImGui::Separator();
+                        ImGui::Text("UV:");
+                        ImGui::Text("  U: %.4f", vertices[g_eseSelectedVertex].uv[0]);
+                        ImGui::Text("  V: %.4f", vertices[g_eseSelectedVertex].uv[1]);
+                    }
+                }
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No vertex selected");
+                ImGui::Text("Click on a vertex to select it");
+            }
+            
+            // Show total vertex count
+            if (g_objMeshResource) {
+                ImGui::Separator();
+                ImGui::Text("Total vertices: %zu", g_objMeshResource->getVertices().size());
+            }
+            
+            // Show connection points list
+            if (!g_eseConnectionPoints.empty()) {
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.84f, 0.0f, 1.0f), "Connection Points: %zu", g_eseConnectionPoints.size());
+                ImGui::Text("Press Ctrl+Enter on selected vertex to create");
+                
+                for (size_t i = 0; i < g_eseConnectionPoints.size(); i++) {
+                    const ConnectionPoint& cp = g_eseConnectionPoints[i];
+                    bool isSelected = (g_eseSelectedConnectionPoint >= 0 && (size_t)g_eseSelectedConnectionPoint == i);
+                    
+                    char label[128];
+                    snprintf(label, sizeof(label), "%s (V:%d)##cp_%zu", cp.name, cp.vertex_index, i);
+                    
+                    if (ImGui::Selectable(label, isSelected)) {
+                        g_eseSelectedConnectionPoint = (int)i;
+                        g_eseShowConnectionPointWindow = true;
+                    }
+                }
+            }
+        }
+        ImGui::End();
+        
+        // Draw vertex points as overlay using ImGui foreground draw list
+        if (g_objMeshResource) {
+            ImDrawList* drawList = ImGui::GetForegroundDrawList();
+            const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+            
+            // Limit to first 50000 vertices for performance (can be adjusted)
+            size_t maxVerts = std::min(vertices.size(), (size_t)50000);
+            
+            // Calculate camera position (same as in render_obj_mesh_to_command_buffer)
+            float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
+            float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
+            if (pitchRad > 1.5f) pitchRad = 1.5f;
+            if (pitchRad < -1.5f) pitchRad = -1.5f;
+            
+            float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
+            float camY = g_eseCameraDistance * sinf(pitchRad);
+            float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
+            
+            glm::vec3 cameraPos(
+                camX + g_eseCameraTargetX + g_eseCameraPanX,
+                camY + g_eseCameraTargetY + g_eseCameraPanY,
+                camZ + g_eseCameraTargetZ
+            );
+            
+            // Get target position for view direction calculation
+            glm::vec3 targetPos(
+                g_eseCameraTargetX + g_eseCameraPanX,
+                g_eseCameraTargetY + g_eseCameraPanY,
+                g_eseCameraTargetZ
+            );
+            
+            // Get indices to build face normals
+            const std::vector<uint32_t>& indices = g_objMeshResource->getIndices();
+            
+            // Build a map: vertex index -> list of faces (triangles) it belongs to
+            std::vector<std::vector<size_t>> vertexToFaces(vertices.size());
+            for (size_t triIdx = 0; triIdx < indices.size(); triIdx += 3) {
+                if (triIdx + 2 < indices.size()) {
+                    uint32_t v0 = indices[triIdx];
+                    uint32_t v1 = indices[triIdx + 1];
+                    uint32_t v2 = indices[triIdx + 2];
+                    size_t faceIdx = triIdx / 3;
+                    vertexToFaces[v0].push_back(faceIdx);
+                    vertexToFaces[v1].push_back(faceIdx);
+                    vertexToFaces[v2].push_back(faceIdx);
+                }
+            }
+            
+            // Get view direction (camera looks towards target)
+            glm::vec3 viewDir = glm::normalize(targetPos - cameraPos);
+            
+            for (size_t i = 0; i < maxVerts; i++) {
+                glm::vec3 vertPos(vertices[i].pos[0], vertices[i].pos[1], vertices[i].pos[2]);
+                
+                // Check if any face containing this vertex faces the camera
+                bool hasVisibleFace = false;
+                
+                for (size_t faceIdx : vertexToFaces[i]) {
+                    size_t triStart = faceIdx * 3;
+                    if (triStart + 2 < indices.size()) {
+                        uint32_t v0Idx = indices[triStart];
+                        uint32_t v1Idx = indices[triStart + 1];
+                        uint32_t v2Idx = indices[triStart + 2];
+                        
+                        // Get triangle vertices
+                        glm::vec3 v0(vertices[v0Idx].pos[0], vertices[v0Idx].pos[1], vertices[v0Idx].pos[2]);
+                        glm::vec3 v1(vertices[v1Idx].pos[0], vertices[v1Idx].pos[1], vertices[v1Idx].pos[2]);
+                        glm::vec3 v2(vertices[v2Idx].pos[0], vertices[v2Idx].pos[1], vertices[v2Idx].pos[2]);
+                        
+                        // Calculate face normal (using cross product)
+                        glm::vec3 edge1 = v1 - v0;
+                        glm::vec3 edge2 = v2 - v0;
+                        glm::vec3 faceNormal = glm::normalize(glm::cross(edge1, edge2));
+                        
+                        // Check if face normal faces camera
+                        // Direction from face center to camera
+                        glm::vec3 faceCenter = (v0 + v1 + v2) / 3.0f;
+                        glm::vec3 toCamera = glm::normalize(cameraPos - faceCenter);
+                        
+                        // If dot product > 0, normal faces camera
+                        float dot = glm::dot(faceNormal, toCamera);
+                        if (dot > 0.0f) {
+                            hasVisibleFace = true;
+                            break;  // Found at least one visible face, can show vertex
+                        }
+                    }
+                }
+                
+                if (hasVisibleFace) {
+                    bool inFront = false;
+                    glm::vec2 screenPos = ese_project_to_screen(vertPos, &inFront);
+                    
+                    if (inFront && screenPos.x >= 0 && screenPos.x < g_swapchainExtent.width &&
+                        screenPos.y >= 0 && screenPos.y < g_swapchainExtent.height) {
+                        
+                        ImVec2 pos(screenPos.x, screenPos.y);
+                        
+                        bool isSelected = g_eseSelectedVertices.count((int)i) > 0;
+                        if (isSelected) {
+                            // Selected vertex: large red circle with outline (75% smaller)
+                            drawList->AddCircleFilled(pos, 2.0f, IM_COL32(255, 50, 50, 255));
+                            drawList->AddCircle(pos, 2.0f, IM_COL32(255, 255, 255, 255), 0, 1.0f);
+                        } else {
+                            // Normal vertex: small cyan point (75% smaller)
+                            drawList->AddCircleFilled(pos, 0.75f, IM_COL32(0, 200, 255, 180));
+                        }
+                    }
+                }
+            }
+            
+            // Show vertex count warning if limited
+            if (vertices.size() > maxVerts) {
+                ImGui::SetNextWindowPos(ImVec2((float)g_swapchainExtent.width / 2 - 100, 50), ImGuiCond_Always);
+                ImGui::Begin("##vertexWarning", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Showing %zu of %zu vertices", maxVerts, vertices.size());
+                ImGui::End();
+            }
+            
+            // Draw connection points as special markers
+            for (size_t i = 0; i < g_eseConnectionPoints.size(); i++) {
+                const ConnectionPoint& cp = g_eseConnectionPoints[i];
+                if (cp.vertex_index >= 0 && cp.vertex_index < (int)vertices.size()) {
+                    glm::vec3 cpPos(cp.position[0], cp.position[1], cp.position[2]);
+                    bool inFront;
+                    glm::vec2 screenPos = ese_project_to_screen(cpPos, &inFront);
+                    
+                    if (inFront && screenPos.x >= 0 && screenPos.x < g_swapchainExtent.width &&
+                        screenPos.y >= 0 && screenPos.y < g_swapchainExtent.height) {
+                        
+                        ImVec2 pos(screenPos.x, screenPos.y);
+                        
+                        // Draw connection point as a larger yellow/gold circle with outline
+                        bool isSelected = (g_eseSelectedConnectionPoint >= 0 && 
+                                         (size_t)g_eseSelectedConnectionPoint == i);
+                        float radius = isSelected ? 4.0f : 3.0f;
+                        ImU32 color = isSelected ? IM_COL32(255, 215, 0, 255) : IM_COL32(255, 200, 0, 200);
+                        ImU32 outlineColor = IM_COL32(255, 255, 255, 255);
+                        
+                        drawList->AddCircleFilled(pos, radius, color);
+                        drawList->AddCircle(pos, radius, outlineColor, 0, 1.5f);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Edge Info Panel (only visible in edge mode)
+    if (g_eseEdgeMode) {
+        ImGui::SetNextWindowPos(ImVec2((float)g_swapchainExtent.width - 330, 30), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(320, 200), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Edge Info")) {
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), "EDGE MODE ACTIVE");
+            ImGui::Text("Click to select, Ctrl+click to multi-select");
+            ImGui::Separator();
+            
+            if (!g_eseSelectedEdges.empty()) {
+                ImGui::Text("Selected: %zu edges", g_eseSelectedEdges.size());
+            }
+            
+            if (g_eseSelectedEdge >= 0 && g_eseSelectedEdge < (int)g_eseQuadEdges.size() && g_objMeshResource) {
+                const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+                const QuadEdge& qe = g_eseQuadEdges[g_eseSelectedEdge];
+                
+                ImGui::Text("Quad Edge: %d", g_eseSelectedEdge);
+                ImGui::Separator();
+                ImGui::Text("Vertex A: %u", qe.v0);
+                if (qe.v0 < vertices.size()) {
+                    ImGui::Text("  Pos: (%.3f, %.3f, %.3f)", 
+                        vertices[qe.v0].pos[0], vertices[qe.v0].pos[1], vertices[qe.v0].pos[2]);
+                }
+                ImGui::Text("Vertex B: %u", qe.v1);
+                if (qe.v1 < vertices.size()) {
+                    ImGui::Text("  Pos: (%.3f, %.3f, %.3f)", 
+                        vertices[qe.v1].pos[0], vertices[qe.v1].pos[1], vertices[qe.v1].pos[2]);
+                }
+                
+                ImGui::Separator();
+                ImGui::Text("In %zu quad(s)", qe.quadIndices.size());
+                
+                // Calculate edge length
+                if (qe.v0 < vertices.size() && qe.v1 < vertices.size()) {
+                    glm::vec3 p0(vertices[qe.v0].pos[0], vertices[qe.v0].pos[1], vertices[qe.v0].pos[2]);
+                    glm::vec3 p1(vertices[qe.v1].pos[0], vertices[qe.v1].pos[1], vertices[qe.v1].pos[2]);
+                    float length = glm::length(p1 - p0);
+                    ImGui::Separator();
+                    ImGui::Text("Edge Length: %.6f", length);
+                }
+                
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "Press I to insert edge loop");
+            } else {
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No edge selected");
+                ImGui::Text("Click on a quad edge to select it");
+            }
+            
+            if (g_objMeshResource) {
+                ImGui::Separator();
+                ImGui::Text("Quad edges: %zu", g_eseQuadEdges.size());
+            }
+        }
+        ImGui::End();
+        
+        // Draw QUAD edges only (not triangle diagonals)
+        if (g_objMeshResource && !g_eseQuadEdges.empty()) {
+            ImDrawList* drawList = ImGui::GetForegroundDrawList();
+            const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+            
+            // Calculate camera position for backface culling
+            float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
+            float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
+            if (pitchRad > 1.5f) pitchRad = 1.5f;
+            if (pitchRad < -1.5f) pitchRad = -1.5f;
+            
+            float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
+            float camY = g_eseCameraDistance * sinf(pitchRad);
+            float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
+            
+            glm::vec3 cameraPos(
+                camX + g_eseCameraTargetX + g_eseCameraPanX,
+                camY + g_eseCameraTargetY + g_eseCameraPanY,
+                camZ + g_eseCameraTargetZ
+            );
+            
+            for (size_t ei = 0; ei < g_eseQuadEdges.size(); ei++) {
+                const QuadEdge& qe = g_eseQuadEdges[ei];
+                
+                if (qe.v0 >= vertices.size() || qe.v1 >= vertices.size()) continue;
+                
+                glm::vec3 p0(vertices[qe.v0].pos[0], vertices[qe.v0].pos[1], vertices[qe.v0].pos[2]);
+                glm::vec3 p1(vertices[qe.v1].pos[0], vertices[qe.v1].pos[1], vertices[qe.v1].pos[2]);
+                glm::vec3 edgeMid = (p0 + p1) * 0.5f;
+                
+                // Backface culling: check if any quad containing this edge is visible
+                bool anyQuadVisible = false;
+                for (int qi : qe.quadIndices) {
+                    if (qi >= 0 && qi < (int)g_eseReconstructedQuads.size()) {
+                        const auto& quad = g_eseReconstructedQuads[qi];
+                        glm::vec3 qp0(vertices[quad[0]].pos[0], vertices[quad[0]].pos[1], vertices[quad[0]].pos[2]);
+                        glm::vec3 qp1(vertices[quad[1]].pos[0], vertices[quad[1]].pos[1], vertices[quad[1]].pos[2]);
+                        glm::vec3 qp2(vertices[quad[2]].pos[0], vertices[quad[2]].pos[1], vertices[quad[2]].pos[2]);
+                        glm::vec3 qp3(vertices[quad[3]].pos[0], vertices[quad[3]].pos[1], vertices[quad[3]].pos[2]);
+                        glm::vec3 center = (qp0 + qp1 + qp2 + qp3) * 0.25f;
+                        glm::vec3 normal = glm::normalize(glm::cross(qp1 - qp0, qp2 - qp0));
+                        if (glm::dot(normal, glm::normalize(cameraPos - center)) > 0.0f) {
+                            anyQuadVisible = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!anyQuadVisible) continue;
+                
+                bool inFront0, inFront1;
+                glm::vec2 screenStart = ese_project_to_screen(p0, &inFront0);
+                glm::vec2 screenEnd = ese_project_to_screen(p1, &inFront1);
+                
+                if (inFront0 && inFront1) {
+                    bool isSelected = g_eseSelectedEdges.count((int)ei) > 0;
+                    ImU32 color = isSelected ? 
+                        IM_COL32(255, 100, 50, 255) : IM_COL32(255, 180, 100, 120);
+                    float thickness = isSelected ? 3.0f : 1.5f;
+                    
+                    drawList->AddLine(
+                        ImVec2(screenStart.x, screenStart.y),
+                        ImVec2(screenEnd.x, screenEnd.y),
+                        color, thickness
+                    );
+                }
+            }
+        }
+    }
+    
+    // Face Info Panel (only visible in face mode)
+    if (g_eseFaceMode) {
+        ImGui::SetNextWindowPos(ImVec2((float)g_swapchainExtent.width - 330, 30), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(320, 220), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Face Info")) {
+            ImGui::TextColored(ImVec4(0.8f, 0.2f, 1.0f, 1.0f), "FACE MODE ACTIVE");
+            ImGui::Text("Press 3 to toggle, click to select");
+            ImGui::Separator();
+            
+            if (g_eseSelectedFace >= 0 && g_objMeshResource) {
+                const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+                const std::vector<uint32_t>& indices = g_objMeshResource->getIndices();
+                
+                size_t triStart = g_eseSelectedFace * 3;
+                if (triStart + 2 < indices.size()) {
+                    uint32_t v0Idx = indices[triStart];
+                    uint32_t v1Idx = indices[triStart + 1];
+                    uint32_t v2Idx = indices[triStart + 2];
+                    
+                    ImGui::Text("Selected Face: %d", g_eseSelectedFace);
+                    ImGui::Separator();
+                    ImGui::Text("Vertices: %u, %u, %u", v0Idx, v1Idx, v2Idx);
+                    
+                    if (v0Idx < vertices.size() && v1Idx < vertices.size() && v2Idx < vertices.size()) {
+                        glm::vec3 p0(vertices[v0Idx].pos[0], vertices[v0Idx].pos[1], vertices[v0Idx].pos[2]);
+                        glm::vec3 p1(vertices[v1Idx].pos[0], vertices[v1Idx].pos[1], vertices[v1Idx].pos[2]);
+                        glm::vec3 p2(vertices[v2Idx].pos[0], vertices[v2Idx].pos[1], vertices[v2Idx].pos[2]);
+                        
+                        // Calculate face normal
+                        glm::vec3 edge1 = p1 - p0;
+                        glm::vec3 edge2 = p2 - p0;
+                        glm::vec3 normal = glm::normalize(glm::cross(edge1, edge2));
+                        
+                        ImGui::Separator();
+                        ImGui::Text("Normal:");
+                        ImGui::Text("  (%.4f, %.4f, %.4f)", normal.x, normal.y, normal.z);
+                        
+                        // Calculate area
+                        float area = glm::length(glm::cross(edge1, edge2)) * 0.5f;
+                        ImGui::Separator();
+                        ImGui::Text("Area: %.6f", area);
+                        
+                        // Face center
+                        glm::vec3 center = (p0 + p1 + p2) / 3.0f;
+                        ImGui::Text("Center: (%.3f, %.3f, %.3f)", center.x, center.y, center.z);
+                    }
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No face selected");
+                ImGui::Text("Click on a face to select it");
+            }
+            
+            if (g_objMeshResource) {
+                ImGui::Separator();
+                ImGui::Text("Total faces: %zu", g_objMeshResource->getIndices().size() / 3);
+            }
+        }
+        ImGui::End();
+        
+        // Draw face highlighting as overlay
+        if (g_objMeshResource) {
+            ImDrawList* drawList = ImGui::GetForegroundDrawList();
+            const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+            const std::vector<uint32_t>& indices = g_objMeshResource->getIndices();
+            
+            // Calculate camera position for backface culling
+            float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
+            float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
+            if (pitchRad > 1.5f) pitchRad = 1.5f;
+            if (pitchRad < -1.5f) pitchRad = -1.5f;
+            
+            float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
+            float camY = g_eseCameraDistance * sinf(pitchRad);
+            float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
+            
+            glm::vec3 cameraPos(
+                camX + g_eseCameraTargetX + g_eseCameraPanX,
+                camY + g_eseCameraTargetY + g_eseCameraPanY,
+                camZ + g_eseCameraTargetZ
+            );
+            
+            size_t numFaces = indices.size() / 3;
+            
+            // Only draw selected face highlight (drawing all faces would be too heavy)
+            if (g_eseSelectedFace >= 0 && (size_t)g_eseSelectedFace < numFaces) {
+                size_t triStart = g_eseSelectedFace * 3;
+                if (triStart + 2 < indices.size()) {
+                    uint32_t v0Idx = indices[triStart];
+                    uint32_t v1Idx = indices[triStart + 1];
+                    uint32_t v2Idx = indices[triStart + 2];
+                    
+                    glm::vec3 v0(vertices[v0Idx].pos[0], vertices[v0Idx].pos[1], vertices[v0Idx].pos[2]);
+                    glm::vec3 v1(vertices[v1Idx].pos[0], vertices[v1Idx].pos[1], vertices[v1Idx].pos[2]);
+                    glm::vec3 v2(vertices[v2Idx].pos[0], vertices[v2Idx].pos[1], vertices[v2Idx].pos[2]);
+                    
+                    bool inFront0, inFront1, inFront2;
+                    glm::vec2 screen0 = ese_project_to_screen(v0, &inFront0);
+                    glm::vec2 screen1 = ese_project_to_screen(v1, &inFront1);
+                    glm::vec2 screen2 = ese_project_to_screen(v2, &inFront2);
+                    
+                    if (inFront0 && inFront1 && inFront2) {
+                        // Draw filled triangle with transparency
+                        drawList->AddTriangleFilled(
+                            ImVec2(screen0.x, screen0.y),
+                            ImVec2(screen1.x, screen1.y),
+                            ImVec2(screen2.x, screen2.y),
+                            IM_COL32(200, 50, 255, 100)
+                        );
+                        // Draw outline
+                        drawList->AddTriangle(
+                            ImVec2(screen0.x, screen0.y),
+                            ImVec2(screen1.x, screen1.y),
+                            ImVec2(screen2.x, screen2.y),
+                            IM_COL32(255, 100, 255, 255),
+                            2.0f
+                        );
+                    }
+                }
+            }
+            
+            // Draw small dots at face centers for all visible faces
+            size_t maxFaces = std::min(numFaces, (size_t)20000);
+            size_t step = (numFaces > maxFaces) ? (numFaces / maxFaces) : 1;
+            
+            for (size_t faceIdx = 0; faceIdx < numFaces; faceIdx += step) {
+                size_t triStart = faceIdx * 3;
+                if (triStart + 2 >= indices.size()) break;
+                
+                uint32_t v0Idx = indices[triStart];
+                uint32_t v1Idx = indices[triStart + 1];
+                uint32_t v2Idx = indices[triStart + 2];
+                
+                glm::vec3 v0(vertices[v0Idx].pos[0], vertices[v0Idx].pos[1], vertices[v0Idx].pos[2]);
+                glm::vec3 v1(vertices[v1Idx].pos[0], vertices[v1Idx].pos[1], vertices[v1Idx].pos[2]);
+                glm::vec3 v2(vertices[v2Idx].pos[0], vertices[v2Idx].pos[1], vertices[v2Idx].pos[2]);
+                
+                // Face normal for backface culling
+                glm::vec3 edge1 = v1 - v0;
+                glm::vec3 edge2 = v2 - v0;
+                glm::vec3 faceNormal = glm::normalize(glm::cross(edge1, edge2));
+                glm::vec3 faceCenter = (v0 + v1 + v2) / 3.0f;
+                glm::vec3 toCamera = glm::normalize(cameraPos - faceCenter);
+                
+                if (glm::dot(faceNormal, toCamera) <= 0.0f) continue;  // Skip backfaces
+                
+                bool inFront;
+                glm::vec2 screenCenter = ese_project_to_screen(faceCenter, &inFront);
+                
+                if (inFront && screenCenter.x >= 0 && screenCenter.x < g_swapchainExtent.width &&
+                    screenCenter.y >= 0 && screenCenter.y < g_swapchainExtent.height) {
+                    
+                    ImU32 color = ((int)faceIdx == g_eseSelectedFace) ? 
+                        IM_COL32(255, 100, 255, 255) : IM_COL32(200, 100, 255, 100);
+                    float radius = ((int)faceIdx == g_eseSelectedFace) ? 3.0f : 1.5f;
+                    
+                    drawList->AddCircleFilled(
+                        ImVec2(screenCenter.x, screenCenter.y),
+                        radius, color
+                    );
+                }
+            }
+        }
+    }
+    
+    // Quad mode visualization and info panel
+    static glm::vec3 g_eseSelectedQuadCenter(0.0f);
+    
+    // Build quads and quad edges for both quad mode and edge mode
+    if ((g_eseQuadMode || g_eseEdgeMode) && g_objMeshResource) {
+        const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+        const std::vector<uint32_t>& indices = g_objMeshResource->getIndices();
+        
+        // Rebuild quads if needed (only when model changes, but not during extrusion)
+        bool shouldRebuildQuads = (indices.size() != g_eseLastQuadIndexCount) && !g_eseExtrudeExecuted;
+        if (shouldRebuildQuads) {
+            g_eseReconstructedQuads.clear();
+            g_eseLastQuadIndexCount = indices.size();
+            
+            // Find coplanar adjacent triangles to form quads
+            size_t numFaces = indices.size() / 3;
+            std::set<size_t> usedFaces;
+            
+            for (size_t i = 0; i < numFaces && g_eseReconstructedQuads.size() < 20000; i++) {
+                if (usedFaces.count(i)) continue;
+                
+                size_t triStart1 = i * 3;
+                uint32_t a1 = indices[triStart1], b1 = indices[triStart1+1], c1 = indices[triStart1+2];
+                
+                glm::vec3 v0(vertices[a1].pos[0], vertices[a1].pos[1], vertices[a1].pos[2]);
+                glm::vec3 v1(vertices[b1].pos[0], vertices[b1].pos[1], vertices[b1].pos[2]);
+                glm::vec3 v2(vertices[c1].pos[0], vertices[c1].pos[1], vertices[c1].pos[2]);
+                glm::vec3 n1 = glm::normalize(glm::cross(v1 - v0, v2 - v0));
+                
+                // Find adjacent triangle with same normal
+                for (size_t j = i + 1; j < numFaces; j++) {
+                    if (usedFaces.count(j)) continue;
+                    
+                    size_t triStart2 = j * 3;
+                    uint32_t a2 = indices[triStart2], b2 = indices[triStart2+1], c2 = indices[triStart2+2];
+                    
+                    // Check for shared edge
+                    std::set<uint32_t> verts1 = {a1, b1, c1};
+                    std::set<uint32_t> verts2 = {a2, b2, c2};
+                    std::vector<uint32_t> shared;
+                    for (uint32_t v : verts1) if (verts2.count(v)) shared.push_back(v);
+                    
+                    if (shared.size() == 2) {
+                        // Shared edge found, check if coplanar
+                        glm::vec3 u0(vertices[a2].pos[0], vertices[a2].pos[1], vertices[a2].pos[2]);
+                        glm::vec3 u1(vertices[b2].pos[0], vertices[b2].pos[1], vertices[b2].pos[2]);
+                        glm::vec3 u2(vertices[c2].pos[0], vertices[c2].pos[1], vertices[c2].pos[2]);
+                        glm::vec3 n2 = glm::normalize(glm::cross(u1 - u0, u2 - u0));
+                        
+                        if (glm::dot(n1, n2) > 0.99f) {
+                            // Coplanar - form a quad
+                            uint32_t unshared1 = 0, unshared2 = 0;
+                            for (uint32_t v : verts1) if (!verts2.count(v)) unshared1 = v;
+                            for (uint32_t v : verts2) if (!verts1.count(v)) unshared2 = v;
+                            
+                            g_eseReconstructedQuads.push_back({shared[0], unshared1, shared[1], unshared2});
+                            usedFaces.insert(i);
+                            usedFaces.insert(j);
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Build quad edges (perimeter edges only, no diagonals)
+            g_eseQuadEdges.clear();
+            std::map<std::pair<uint32_t, uint32_t>, int> edgeToQuadEdgeIndex;
+            
+            for (int qi = 0; qi < (int)g_eseReconstructedQuads.size(); qi++) {
+                const auto& quad = g_eseReconstructedQuads[qi];
+                // Quad edges: 0->1, 1->2, 2->3, 3->0
+                for (int ei = 0; ei < 4; ei++) {
+                    uint32_t va = quad[ei];
+                    uint32_t vb = quad[(ei + 1) % 4];
+                    auto key = std::make_pair(std::min(va, vb), std::max(va, vb));
+                    
+                    if (edgeToQuadEdgeIndex.count(key) == 0) {
+                        // New edge
+                        QuadEdge qe;
+                        qe.v0 = va;
+                        qe.v1 = vb;
+                        qe.quadIndices.push_back(qi);
+                        qe.edgeInQuad = ei;
+                        edgeToQuadEdgeIndex[key] = (int)g_eseQuadEdges.size();
+                        g_eseQuadEdges.push_back(qe);
+                    } else {
+                        // Existing edge - add this quad to its list
+                        g_eseQuadEdges[edgeToQuadEdgeIndex[key]].quadIndices.push_back(qi);
+                    }
+                }
+            }
+            
+            std::cout << "[ESE] Built " << g_eseQuadEdges.size() << " quad edges from " 
+                      << g_eseReconstructedQuads.size() << " quads" << std::endl;
+        }
+        
+        // Draw quads (only in quad mode, not edge mode)
+        if (!g_eseQuadMode) {
+            // Skip quad drawing in edge mode - edges are drawn separately
+        } else {
+        ImDrawList* drawList = ImGui::GetForegroundDrawList();
+        
+        float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
+        float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
+        if (pitchRad > 1.5f) pitchRad = 1.5f;
+        if (pitchRad < -1.5f) pitchRad = -1.5f;
+        float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
+        float camY = g_eseCameraDistance * sinf(pitchRad);
+        float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
+        glm::vec3 cameraPos(camX + g_eseCameraTargetX + g_eseCameraPanX,
+                            camY + g_eseCameraTargetY + g_eseCameraPanY,
+                            camZ + g_eseCameraTargetZ);
+        
+        for (size_t qi = 0; qi < g_eseReconstructedQuads.size(); qi++) {
+            const auto& quad = g_eseReconstructedQuads[qi];
+            glm::vec3 p0(vertices[quad[0]].pos[0], vertices[quad[0]].pos[1], vertices[quad[0]].pos[2]);
+            glm::vec3 p1(vertices[quad[1]].pos[0], vertices[quad[1]].pos[1], vertices[quad[1]].pos[2]);
+            glm::vec3 p2(vertices[quad[2]].pos[0], vertices[quad[2]].pos[1], vertices[quad[2]].pos[2]);
+            glm::vec3 p3(vertices[quad[3]].pos[0], vertices[quad[3]].pos[1], vertices[quad[3]].pos[2]);
+            
+            glm::vec3 center = (p0 + p1 + p2 + p3) * 0.25f;
+            glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+            glm::vec3 toCamera = glm::normalize(cameraPos - center);
+            
+            if (glm::dot(normal, toCamera) <= 0.0f) continue;  // Backface cull
+            
+            bool inFront0, inFront1, inFront2, inFront3;
+            glm::vec2 s0 = ese_project_to_screen(p0, &inFront0);
+            glm::vec2 s1 = ese_project_to_screen(p1, &inFront1);
+            glm::vec2 s2 = ese_project_to_screen(p2, &inFront2);
+            glm::vec2 s3 = ese_project_to_screen(p3, &inFront3);
+            
+            if (inFront0 && inFront1 && inFront2 && inFront3) {
+                bool isSelected = g_eseSelectedQuads.count((int)qi) > 0;
+                ImU32 color = isSelected ? IM_COL32(255, 200, 50, 255) : IM_COL32(200, 180, 100, 150);
+                float thickness = isSelected ? 3.0f : 1.5f;
+                
+                // Draw quad outline (4 edges)
+                drawList->AddLine(ImVec2(s0.x, s0.y), ImVec2(s1.x, s1.y), color, thickness);
+                drawList->AddLine(ImVec2(s1.x, s1.y), ImVec2(s2.x, s2.y), color, thickness);
+                drawList->AddLine(ImVec2(s2.x, s2.y), ImVec2(s3.x, s3.y), color, thickness);
+                drawList->AddLine(ImVec2(s3.x, s3.y), ImVec2(s0.x, s0.y), color, thickness);
+                
+                // Draw center dot
+                bool inFrontC;
+                glm::vec2 sc = ese_project_to_screen(center, &inFrontC);
+                if (inFrontC) {
+                    drawList->AddCircleFilled(ImVec2(sc.x, sc.y), isSelected ? 4.0f : 2.0f, color);
+                }
+            }
+        }
+        
+        // Info panel
+        ImGui::SetNextWindowPos(ImVec2((float)g_swapchainExtent.width - 330, 30), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(320, 200), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Quad Info")) {
+            ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.3f, 1.0f), "QUAD MODE ACTIVE");
+            if (g_eseExtrudeMode) {
+                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), ">>> EXTRUDE MODE <<<");
+                ImGui::Text("Drag gizmo to extrude!");
+            } else {
+                ImGui::Text("Press W to enable extrude");
+            }
+            ImGui::Text("Reconstructed Quads: %zu", g_eseReconstructedQuads.size());
+            ImGui::Separator();
+            
+            if (!g_eseSelectedQuads.empty()) {
+                ImGui::Text("Selected: %zu quads", g_eseSelectedQuads.size());
+                ImGui::Text("Ctrl+click to add/remove from selection");
+                
+                if (g_eseSelectedQuad >= 0 && g_eseSelectedQuad < (int)g_eseReconstructedQuads.size()) {
+                    const auto& quad = g_eseReconstructedQuads[g_eseSelectedQuad];
+                    ImGui::Separator();
+                    ImGui::Text("Primary Quad: %d", g_eseSelectedQuad);
+                    ImGui::Text("Vertices: %u, %u, %u, %u", quad[0], quad[1], quad[2], quad[3]);
+                    
+                    glm::vec3 p0(vertices[quad[0]].pos[0], vertices[quad[0]].pos[1], vertices[quad[0]].pos[2]);
+                    glm::vec3 p1(vertices[quad[1]].pos[0], vertices[quad[1]].pos[1], vertices[quad[1]].pos[2]);
+                    glm::vec3 p2(vertices[quad[2]].pos[0], vertices[quad[2]].pos[1], vertices[quad[2]].pos[2]);
+                    glm::vec3 p3(vertices[quad[3]].pos[0], vertices[quad[3]].pos[1], vertices[quad[3]].pos[2]);
+                    
+                    g_eseSelectedQuadCenter = (p0 + p1 + p2 + p3) * 0.25f;
+                    ImGui::Text("Center: (%.3f, %.3f, %.3f)", g_eseSelectedQuadCenter.x, g_eseSelectedQuadCenter.y, g_eseSelectedQuadCenter.z);
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No quad selected");
+                ImGui::Text("Click on a quad to select it");
+            }
+        }
+        ImGui::End();
+        } // End of quad mode drawing (the else block)
+    }
+    
+    // Move Gizmo - Draw when any element is selected
+    bool hasSelection = (!g_eseSelectedVertices.empty() && g_eseVertexMode) ||
+                        (!g_eseSelectedEdges.empty() && g_eseEdgeMode) ||
+                        (g_eseSelectedFace >= 0 && g_eseFaceMode) ||
+                        (!g_eseSelectedQuads.empty() && g_eseQuadMode);
+    
+    if (hasSelection && g_objMeshResource) {
+        // Calculate gizmo position based on selection
+        const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+        const std::vector<uint32_t>& indices = g_objMeshResource->getIndices();
+        
+        glm::vec3 gizmoCenter(0.0f);
+        
+        if (g_eseVertexMode && !g_eseSelectedVertices.empty()) {
+            // Calculate center of all selected vertices
+            glm::vec3 sum(0.0f);
+            for (int vi : g_eseSelectedVertices) {
+                if (vi >= 0 && vi < (int)vertices.size()) {
+                    sum += glm::vec3(vertices[vi].pos[0], vertices[vi].pos[1], vertices[vi].pos[2]);
+                }
+            }
+            gizmoCenter = sum / (float)g_eseSelectedVertices.size();
+        } else if (g_eseEdgeMode && !g_eseSelectedEdges.empty()) {
+            // Calculate center of all selected quad edges
+            glm::vec3 sum(0.0f);
+            int count = 0;
+            for (int edgeIdx : g_eseSelectedEdges) {
+                if (edgeIdx >= 0 && edgeIdx < (int)g_eseQuadEdges.size()) {
+                    const QuadEdge& qe = g_eseQuadEdges[edgeIdx];
+                    uint32_t v0Idx = qe.v0;
+                    uint32_t v1Idx = qe.v1;
+                    glm::vec3 v0(vertices[v0Idx].pos[0], vertices[v0Idx].pos[1], vertices[v0Idx].pos[2]);
+                    glm::vec3 v1(vertices[v1Idx].pos[0], vertices[v1Idx].pos[1], vertices[v1Idx].pos[2]);
+                    sum += (v0 + v1) * 0.5f;
+                    count++;
+                }
+            }
+            if (count > 0) gizmoCenter = sum / (float)count;
+        } else if (g_eseFaceMode && g_eseSelectedFace >= 0) {
+            size_t triStart = g_eseSelectedFace * 3;
+            if (triStart + 2 < indices.size()) {
+                glm::vec3 v0(vertices[indices[triStart]].pos[0], vertices[indices[triStart]].pos[1], vertices[indices[triStart]].pos[2]);
+                glm::vec3 v1(vertices[indices[triStart+1]].pos[0], vertices[indices[triStart+1]].pos[1], vertices[indices[triStart+1]].pos[2]);
+                glm::vec3 v2(vertices[indices[triStart+2]].pos[0], vertices[indices[triStart+2]].pos[1], vertices[indices[triStart+2]].pos[2]);
+                gizmoCenter = (v0 + v1 + v2) / 3.0f;
+            }
+        } else if (g_eseQuadMode && !g_eseSelectedQuads.empty()) {
+            // Calculate center of all selected quads
+            glm::vec3 sum(0.0f);
+            int count = 0;
+            for (int quadIdx : g_eseSelectedQuads) {
+                if (quadIdx >= 0 && quadIdx < (int)g_eseReconstructedQuads.size()) {
+                    const auto& quad = g_eseReconstructedQuads[quadIdx];
+                    glm::vec3 p0(vertices[quad[0]].pos[0], vertices[quad[0]].pos[1], vertices[quad[0]].pos[2]);
+                    glm::vec3 p1(vertices[quad[1]].pos[0], vertices[quad[1]].pos[1], vertices[quad[1]].pos[2]);
+                    glm::vec3 p2(vertices[quad[2]].pos[0], vertices[quad[2]].pos[1], vertices[quad[2]].pos[2]);
+                    glm::vec3 p3(vertices[quad[3]].pos[0], vertices[quad[3]].pos[1], vertices[quad[3]].pos[2]);
+                    sum += (p0 + p1 + p2 + p3) * 0.25f;
+                    count++;
+                }
+            }
+            if (count > 0) gizmoCenter = sum / (float)count;
+        }
+        
+        g_eseGizmoPosition = gizmoCenter;
+        
+        // Draw gizmo axes
+        ImDrawList* drawList = ImGui::GetForegroundDrawList();
+        float axisLength = 0.3f;  // Length of gizmo axes in world space
+        float scaleHandlePos = 0.5f;  // Scale handle at 50% of axis length
+        
+        bool inFrontCenter;
+        glm::vec2 screenCenter = ese_project_to_screen(gizmoCenter, &inFrontCenter);
+        
+        // Store scale handle positions for hit testing
+        g_eseScaleCenter = gizmoCenter;
+        
+        if (inFrontCenter) {
+            // X axis (red)
+            bool inFrontX, inFrontXScale;
+            glm::vec2 screenX = ese_project_to_screen(gizmoCenter + glm::vec3(axisLength, 0, 0), &inFrontX);
+            glm::vec2 screenXScale = ese_project_to_screen(gizmoCenter + glm::vec3(axisLength * scaleHandlePos, 0, 0), &inFrontXScale);
+            if (inFrontX) {
+                ImU32 colorX = (g_eseGizmoDragAxis == 0 && !g_eseGizmoScaling) ? IM_COL32(255, 255, 0, 255) : IM_COL32(255, 50, 50, 255);
+                ImU32 scaleColorX = (g_eseGizmoDragAxis == 0 && g_eseGizmoScaling) ? IM_COL32(255, 255, 0, 255) : IM_COL32(255, 100, 100, 255);
+                drawList->AddLine(ImVec2(screenCenter.x, screenCenter.y), ImVec2(screenX.x, screenX.y), colorX, 3.0f);
+                drawList->AddCircleFilled(ImVec2(screenX.x, screenX.y), 6.0f, colorX);
+                // Scale handle (small square)
+                if (inFrontXScale) {
+                    float sz = 5.0f;
+                    drawList->AddRectFilled(
+                        ImVec2(screenXScale.x - sz, screenXScale.y - sz),
+                        ImVec2(screenXScale.x + sz, screenXScale.y + sz),
+                        scaleColorX);
+                }
+                drawList->AddText(ImVec2(screenX.x + 8, screenX.y - 6), IM_COL32(255, 50, 50, 255), "X");
+            }
+            
+            // Y axis (green)
+            bool inFrontY, inFrontYScale;
+            glm::vec2 screenY = ese_project_to_screen(gizmoCenter + glm::vec3(0, axisLength, 0), &inFrontY);
+            glm::vec2 screenYScale = ese_project_to_screen(gizmoCenter + glm::vec3(0, axisLength * scaleHandlePos, 0), &inFrontYScale);
+            if (inFrontY) {
+                ImU32 colorY = (g_eseGizmoDragAxis == 1 && !g_eseGizmoScaling) ? IM_COL32(255, 255, 0, 255) : IM_COL32(50, 255, 50, 255);
+                ImU32 scaleColorY = (g_eseGizmoDragAxis == 1 && g_eseGizmoScaling) ? IM_COL32(255, 255, 0, 255) : IM_COL32(100, 255, 100, 255);
+                drawList->AddLine(ImVec2(screenCenter.x, screenCenter.y), ImVec2(screenY.x, screenY.y), colorY, 3.0f);
+                drawList->AddCircleFilled(ImVec2(screenY.x, screenY.y), 6.0f, colorY);
+                // Scale handle (small square)
+                if (inFrontYScale) {
+                    float sz = 5.0f;
+                    drawList->AddRectFilled(
+                        ImVec2(screenYScale.x - sz, screenYScale.y - sz),
+                        ImVec2(screenYScale.x + sz, screenYScale.y + sz),
+                        scaleColorY);
+                }
+                drawList->AddText(ImVec2(screenY.x + 8, screenY.y - 6), IM_COL32(50, 255, 50, 255), "Y");
+            }
+            
+            // Z axis (blue)
+            bool inFrontZ, inFrontZScale;
+            glm::vec2 screenZ = ese_project_to_screen(gizmoCenter + glm::vec3(0, 0, axisLength), &inFrontZ);
+            glm::vec2 screenZScale = ese_project_to_screen(gizmoCenter + glm::vec3(0, 0, axisLength * scaleHandlePos), &inFrontZScale);
+            if (inFrontZ) {
+                ImU32 colorZ = (g_eseGizmoDragAxis == 2 && !g_eseGizmoScaling) ? IM_COL32(255, 255, 0, 255) : IM_COL32(50, 50, 255, 255);
+                ImU32 scaleColorZ = (g_eseGizmoDragAxis == 2 && g_eseGizmoScaling) ? IM_COL32(255, 255, 0, 255) : IM_COL32(100, 100, 255, 255);
+                drawList->AddLine(ImVec2(screenCenter.x, screenCenter.y), ImVec2(screenZ.x, screenZ.y), colorZ, 3.0f);
+                drawList->AddCircleFilled(ImVec2(screenZ.x, screenZ.y), 6.0f, colorZ);
+                // Scale handle (small square)
+                if (inFrontZScale) {
+                    float sz = 5.0f;
+                    drawList->AddRectFilled(
+                        ImVec2(screenZScale.x - sz, screenZScale.y - sz),
+                        ImVec2(screenZScale.x + sz, screenZScale.y + sz),
+                        scaleColorZ);
+                }
+                drawList->AddText(ImVec2(screenZ.x + 8, screenZ.y - 6), IM_COL32(50, 50, 255, 255), "Z");
+            }
+            
+            // Center point
+            drawList->AddCircleFilled(ImVec2(screenCenter.x, screenCenter.y), 4.0f, IM_COL32(255, 255, 255, 255));
+            
+            // Rotation circles (draw arcs around each axis)
+            float rotRadius = axisLength * 0.7f;  // Radius of rotation circles
+            int numSegments = 32;
+            
+            // X axis rotation circle (rotates around X, so it's in YZ plane)
+            ImU32 rotColorX = (g_eseGizmoDragAxis == 0 && g_eseGizmoRotating) ? IM_COL32(255, 255, 0, 255) : IM_COL32(255, 100, 100, 200);
+            for (int i = 0; i < numSegments; i++) {
+                float angle1 = (float)i / numSegments * 2.0f * 3.14159f;
+                float angle2 = (float)(i + 1) / numSegments * 2.0f * 3.14159f;
+                glm::vec3 p1 = gizmoCenter + glm::vec3(0, cosf(angle1) * rotRadius, sinf(angle1) * rotRadius);
+                glm::vec3 p2 = gizmoCenter + glm::vec3(0, cosf(angle2) * rotRadius, sinf(angle2) * rotRadius);
+                bool f1, f2;
+                glm::vec2 s1 = ese_project_to_screen(p1, &f1);
+                glm::vec2 s2 = ese_project_to_screen(p2, &f2);
+                if (f1 && f2) {
+                    drawList->AddLine(ImVec2(s1.x, s1.y), ImVec2(s2.x, s2.y), rotColorX, 2.0f);
+                }
+            }
+            
+            // Y axis rotation circle (rotates around Y, so it's in XZ plane)
+            ImU32 rotColorY = (g_eseGizmoDragAxis == 1 && g_eseGizmoRotating) ? IM_COL32(255, 255, 0, 255) : IM_COL32(100, 255, 100, 200);
+            for (int i = 0; i < numSegments; i++) {
+                float angle1 = (float)i / numSegments * 2.0f * 3.14159f;
+                float angle2 = (float)(i + 1) / numSegments * 2.0f * 3.14159f;
+                glm::vec3 p1 = gizmoCenter + glm::vec3(cosf(angle1) * rotRadius, 0, sinf(angle1) * rotRadius);
+                glm::vec3 p2 = gizmoCenter + glm::vec3(cosf(angle2) * rotRadius, 0, sinf(angle2) * rotRadius);
+                bool f1, f2;
+                glm::vec2 s1 = ese_project_to_screen(p1, &f1);
+                glm::vec2 s2 = ese_project_to_screen(p2, &f2);
+                if (f1 && f2) {
+                    drawList->AddLine(ImVec2(s1.x, s1.y), ImVec2(s2.x, s2.y), rotColorY, 2.0f);
+                }
+            }
+            
+            // Z axis rotation circle (rotates around Z, so it's in XY plane)
+            ImU32 rotColorZ = (g_eseGizmoDragAxis == 2 && g_eseGizmoRotating) ? IM_COL32(255, 255, 0, 255) : IM_COL32(100, 100, 255, 200);
+            for (int i = 0; i < numSegments; i++) {
+                float angle1 = (float)i / numSegments * 2.0f * 3.14159f;
+                float angle2 = (float)(i + 1) / numSegments * 2.0f * 3.14159f;
+                glm::vec3 p1 = gizmoCenter + glm::vec3(cosf(angle1) * rotRadius, sinf(angle1) * rotRadius, 0);
+                glm::vec3 p2 = gizmoCenter + glm::vec3(cosf(angle2) * rotRadius, sinf(angle2) * rotRadius, 0);
+                bool f1, f2;
+                glm::vec2 s1 = ese_project_to_screen(p1, &f1);
+                glm::vec2 s2 = ese_project_to_screen(p2, &f2);
+                if (f1 && f2) {
+                    drawList->AddLine(ImVec2(s1.x, s1.y), ImVec2(s2.x, s2.y), rotColorZ, 2.0f);
+                }
+            }
+        }
+    }
+    
+    // Draw face normals visualization (independent of vertex mode)
+    if (g_eseShowNormals && g_objMeshResource) {
+        ImDrawList* drawList = ImGui::GetForegroundDrawList();
+        const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+        const std::vector<uint32_t>& indices = g_objMeshResource->getIndices();
+        
+        // Calculate camera position
+        float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
+        float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
+        if (pitchRad > 1.5f) pitchRad = 1.5f;
+        if (pitchRad < -1.5f) pitchRad = -1.5f;
+        
+        float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
+        float camY = g_eseCameraDistance * sinf(pitchRad);
+        float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
+        
+        glm::vec3 cameraPos(
+            camX + g_eseCameraTargetX + g_eseCameraPanX,
+            camY + g_eseCameraTargetY + g_eseCameraPanY,
+            camZ + g_eseCameraTargetZ
+        );
+        
+        // Limit number of normals to draw for performance (sample every Nth face)
+        size_t numFaces = indices.size() / 3;
+        size_t maxFaces = std::min(numFaces, (size_t)10000);  // Limit to 10k faces
+        size_t step = (numFaces > maxFaces) ? (numFaces / maxFaces) : 1;
+        
+        float normalLength = 0.1f;  // Length of normal line in world space
+        
+        for (size_t faceIdx = 0; faceIdx < numFaces; faceIdx += step) {
+            size_t triStart = faceIdx * 3;
+            if (triStart + 2 >= indices.size()) break;
+            
+            uint32_t v0Idx = indices[triStart];
+            uint32_t v1Idx = indices[triStart + 1];
+            uint32_t v2Idx = indices[triStart + 2];
+            
+            // Get triangle vertices
+            glm::vec3 v0(vertices[v0Idx].pos[0], vertices[v0Idx].pos[1], vertices[v0Idx].pos[2]);
+            glm::vec3 v1(vertices[v1Idx].pos[0], vertices[v1Idx].pos[1], vertices[v1Idx].pos[2]);
+            glm::vec3 v2(vertices[v2Idx].pos[0], vertices[v2Idx].pos[1], vertices[v2Idx].pos[2]);
+            
+            // Calculate face center
+            glm::vec3 faceCenter = (v0 + v1 + v2) / 3.0f;
+            
+            // Calculate face normal
+            glm::vec3 edge1 = v1 - v0;
+            glm::vec3 edge2 = v2 - v0;
+            glm::vec3 faceNormal = glm::normalize(glm::cross(edge1, edge2));
+            
+            // Check if face is visible (backface culling)
+            glm::vec3 toCamera = glm::normalize(cameraPos - faceCenter);
+            float dot = glm::dot(faceNormal, toCamera);
+            if (dot <= 0.0f) continue;  // Skip backfaces
+            
+            // Calculate end point of normal line
+            glm::vec3 normalEnd = faceCenter + faceNormal * normalLength;
+            
+            // Project to screen space
+            bool inFront0 = false, inFront1 = false;
+            glm::vec2 screenStart = ese_project_to_screen(faceCenter, &inFront0);
+            glm::vec2 screenEnd = ese_project_to_screen(normalEnd, &inFront1);
+            
+            if (inFront0 && inFront1 && 
+                screenStart.x >= 0 && screenStart.x < g_swapchainExtent.width &&
+                screenStart.y >= 0 && screenStart.y < g_swapchainExtent.height) {
+                
+                // Draw normal line (green for visible faces)
+                drawList->AddLine(
+                    ImVec2(screenStart.x, screenStart.y),
+                    ImVec2(screenEnd.x, screenEnd.y),
+                    IM_COL32(0, 255, 0, 200),
+                    1.0f
+                );
+                
+                // Draw small circle at face center
+                drawList->AddCircleFilled(
+                    ImVec2(screenStart.x, screenStart.y),
+                    1.5f,
+                    IM_COL32(0, 255, 0, 150)
+                );
+            }
+        }
+    }
+    
+    // Draw reconstructed quads visualization
+    if (g_eseShowQuads && g_objMeshResource) {
+        ImDrawList* drawList = ImGui::GetForegroundDrawList();
+        const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
+        const std::vector<uint32_t>& indices = g_objMeshResource->getIndices();
+        
+        // Calculate camera position for backface culling
+        float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
+        float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
+        if (pitchRad > 1.5f) pitchRad = 1.5f;
+        if (pitchRad < -1.5f) pitchRad = -1.5f;
+        
+        float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
+        float camY = g_eseCameraDistance * sinf(pitchRad);
+        float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
+        
+        glm::vec3 cameraPos(
+            camX + g_eseCameraTargetX + g_eseCameraPanX,
+            camY + g_eseCameraTargetY + g_eseCameraPanY,
+            camZ + g_eseCameraTargetZ
+        );
+        
+        // Build edge-to-triangles map
+        // Key: pair of vertex indices (smaller first), Value: list of face indices
+        std::map<std::pair<uint32_t, uint32_t>, std::vector<size_t>> edgeToFaces;
+        
+        size_t numFaces = indices.size() / 3;
+        for (size_t faceIdx = 0; faceIdx < numFaces; faceIdx++) {
+            size_t triStart = faceIdx * 3;
+            if (triStart + 2 >= indices.size()) break;
+            
+            uint32_t vIdx[3] = { indices[triStart], indices[triStart + 1], indices[triStart + 2] };
+            
+            // Add all 3 edges
+            for (int e = 0; e < 3; e++) {
+                uint32_t v0 = vIdx[e];
+                uint32_t v1 = vIdx[(e + 1) % 3];
+                if (v0 > v1) std::swap(v0, v1);  // Ensure consistent ordering
+                edgeToFaces[std::make_pair(v0, v1)].push_back(faceIdx);
+            }
+        }
+        
+        // Track which edges are quad diagonals (shared by 2 coplanar triangles)
+        std::set<std::pair<uint32_t, uint32_t>> diagonalEdges;
+        
+        // Track processed quads to avoid duplicates
+        std::set<std::pair<size_t, size_t>> processedQuads;
+        
+        // Coplanarity threshold (dot product of normals)
+        const float coplanarThreshold = 0.98f;
+        
+        // Find quad pairs
+        for (const auto& edgePair : edgeToFaces) {
+            if (edgePair.second.size() == 2) {
+                size_t face0 = edgePair.second[0];
+                size_t face1 = edgePair.second[1];
+                
+                // Get face normals
+                size_t tri0Start = face0 * 3;
+                size_t tri1Start = face1 * 3;
+                
+                if (tri0Start + 2 >= indices.size() || tri1Start + 2 >= indices.size()) continue;
+                
+                glm::vec3 v0_0(vertices[indices[tri0Start]].pos[0], vertices[indices[tri0Start]].pos[1], vertices[indices[tri0Start]].pos[2]);
+                glm::vec3 v0_1(vertices[indices[tri0Start + 1]].pos[0], vertices[indices[tri0Start + 1]].pos[1], vertices[indices[tri0Start + 1]].pos[2]);
+                glm::vec3 v0_2(vertices[indices[tri0Start + 2]].pos[0], vertices[indices[tri0Start + 2]].pos[1], vertices[indices[tri0Start + 2]].pos[2]);
+                
+                glm::vec3 v1_0(vertices[indices[tri1Start]].pos[0], vertices[indices[tri1Start]].pos[1], vertices[indices[tri1Start]].pos[2]);
+                glm::vec3 v1_1(vertices[indices[tri1Start + 1]].pos[0], vertices[indices[tri1Start + 1]].pos[1], vertices[indices[tri1Start + 1]].pos[2]);
+                glm::vec3 v1_2(vertices[indices[tri1Start + 2]].pos[0], vertices[indices[tri1Start + 2]].pos[1], vertices[indices[tri1Start + 2]].pos[2]);
+                
+                glm::vec3 normal0 = glm::normalize(glm::cross(v0_1 - v0_0, v0_2 - v0_0));
+                glm::vec3 normal1 = glm::normalize(glm::cross(v1_1 - v1_0, v1_2 - v1_0));
+                
+                // Check if coplanar (normals are similar)
+                float dotNormals = glm::dot(normal0, normal1);
+                if (dotNormals > coplanarThreshold) {
+                    // These form a quad - mark this edge as a diagonal
+                    diagonalEdges.insert(edgePair.first);
+                }
+            }
+        }
+        
+        // Draw edges that are NOT diagonals (outer edges of quads + lone triangle edges)
+        size_t maxFaces = std::min(numFaces, (size_t)20000);
+        size_t step = (numFaces > maxFaces) ? (numFaces / maxFaces) : 1;
+        
+        for (size_t faceIdx = 0; faceIdx < numFaces; faceIdx += step) {
+            size_t triStart = faceIdx * 3;
+            if (triStart + 2 >= indices.size()) break;
+            
+            uint32_t vIdx[3] = { indices[triStart], indices[triStart + 1], indices[triStart + 2] };
+            
+            glm::vec3 v[3];
+            for (int i = 0; i < 3; i++) {
+                v[i] = glm::vec3(vertices[vIdx[i]].pos[0], vertices[vIdx[i]].pos[1], vertices[vIdx[i]].pos[2]);
+            }
+            
+            // Backface culling
+            glm::vec3 faceNormal = glm::normalize(glm::cross(v[1] - v[0], v[2] - v[0]));
+            glm::vec3 faceCenter = (v[0] + v[1] + v[2]) / 3.0f;
+            glm::vec3 toCamera = glm::normalize(cameraPos - faceCenter);
+            
+            if (glm::dot(faceNormal, toCamera) <= 0.0f) continue;
+            
+            // Draw each edge if it's not a diagonal
+            for (int e = 0; e < 3; e++) {
+                uint32_t ev0 = vIdx[e];
+                uint32_t ev1 = vIdx[(e + 1) % 3];
+                if (ev0 > ev1) std::swap(ev0, ev1);
+                
+                auto edgeKey = std::make_pair(ev0, ev1);
+                
+                // Skip diagonal edges
+                if (diagonalEdges.count(edgeKey) > 0) continue;
+                
+                glm::vec3 eStart = v[e];
+                glm::vec3 eEnd = v[(e + 1) % 3];
+                
+                bool inFront0, inFront1;
+                glm::vec2 screenStart = ese_project_to_screen(eStart, &inFront0);
+                glm::vec2 screenEnd = ese_project_to_screen(eEnd, &inFront1);
+                
+                if (inFront0 && inFront1) {
+                    // Yellow-gold color for quad edges
+                    drawList->AddLine(
+                        ImVec2(screenStart.x, screenStart.y),
+                        ImVec2(screenEnd.x, screenEnd.y),
+                        IM_COL32(255, 215, 0, 200),
+                        1.0f
+                    );
+                }
+            }
+        }
+        
+        // Show quad count info
+        size_t quadCount = diagonalEdges.size();
+        size_t pureTriCount = numFaces - (quadCount * 2);  // Triangles not part of quads
+        
+        ImGui::SetNextWindowPos(ImVec2((float)g_swapchainExtent.width / 2 - 80, 50), ImGuiCond_Always);
+        ImGui::Begin("##quadInfo", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::TextColored(ImVec4(1.0f, 0.84f, 0.0f, 1.0f), "Quads: %zu  |  Tris: %zu", quadCount, pureTriCount);
+        ImGui::End();
+    }
     
     // Status bar
     if (g_esePropertiesModified) {

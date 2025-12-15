@@ -1,3 +1,0 @@
-# ESE Project Configuration
-# Enable ImGui with GLFW/Vulkan for menu bar and UI
-enable_imgui=true

@@ -437,7 +437,134 @@ public:
     
     // Getters for raw data (for HDM export)
     const std::vector<MeshVertex>& getVertices() const { return m_vertices; }
+    std::vector<MeshVertex>& getVerticesMutable() { return m_vertices; }
     const std::vector<uint32_t>& getIndices() const { return m_indices; }
+    std::vector<uint32_t>& getIndicesMutable() { return m_indices; }
+    
+    /**
+     * Rebuild GPU buffers after modifying vertex/index data
+     * Call this after changing vertices via getVerticesMutable() or indices via getIndicesMutable()
+     */
+    void rebuildBuffers() {
+        if (m_vertices.empty()) return;
+        
+        // CRITICAL: Wait for GPU to finish using the old buffers before destroying them
+        vkDeviceWaitIdle(g_device);
+        
+        // Destroy old buffers
+        if (m_vertexBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_device, m_vertexBuffer, nullptr);
+            m_vertexBuffer = VK_NULL_HANDLE;
+        }
+        if (m_vertexBufferMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_device, m_vertexBufferMemory, nullptr);
+            m_vertexBufferMemory = VK_NULL_HANDLE;
+        }
+        if (m_indexBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_device, m_indexBuffer, nullptr);
+            m_indexBuffer = VK_NULL_HANDLE;
+        }
+        if (m_indexBufferMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_device, m_indexBufferMemory, nullptr);
+            m_indexBufferMemory = VK_NULL_HANDLE;
+        }
+        
+        try {
+            // Create new vertex buffer
+            VkDeviceSize vertexBufferSize = sizeof(MeshVertex) * m_vertices.size();
+            createBuffer(vertexBufferSize, 
+                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                        m_vertexBuffer, m_vertexBufferMemory);
+            
+            // Staging buffer for vertices
+            VkBuffer stagingBuffer;
+            VkDeviceMemory stagingBufferMemory;
+            createBuffer(vertexBufferSize,
+                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                        stagingBuffer, stagingBufferMemory);
+            
+            void* data;
+            vkMapMemory(g_device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
+            memcpy(data, m_vertices.data(), (size_t)vertexBufferSize);
+            vkUnmapMemory(g_device, stagingBufferMemory);
+            
+            // Copy to GPU
+            VkCommandBufferAllocateInfo allocInfo = {};
+            allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocInfo.commandPool = g_commandPool;
+            allocInfo.commandBufferCount = 1;
+            
+            VkCommandBuffer commandBuffer;
+            vkAllocateCommandBuffers(g_device, &allocInfo, &commandBuffer);
+            
+            VkCommandBufferBeginInfo beginInfo = {};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(commandBuffer, &beginInfo);
+            
+            VkBufferCopy copyRegion = {};
+            copyRegion.size = vertexBufferSize;
+            vkCmdCopyBuffer(commandBuffer, stagingBuffer, m_vertexBuffer, 1, &copyRegion);
+            
+            vkEndCommandBuffer(commandBuffer);
+            
+            VkSubmitInfo submitInfo = {};
+            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &commandBuffer;
+            
+            vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+            vkQueueWaitIdle(g_graphicsQueue);
+            
+            vkFreeCommandBuffers(g_device, g_commandPool, 1, &commandBuffer);
+            vkDestroyBuffer(g_device, stagingBuffer, nullptr);
+            vkFreeMemory(g_device, stagingBufferMemory, nullptr);
+            
+            // Create new index buffer
+            if (!m_indices.empty()) {
+                m_indexCount = m_indices.size();
+                VkDeviceSize indexBufferSize = sizeof(uint32_t) * m_indices.size();
+                
+                createBuffer(indexBufferSize,
+                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                            m_indexBuffer, m_indexBufferMemory);
+                
+                VkBuffer stagingIndexBuffer;
+                VkDeviceMemory stagingIndexBufferMemory;
+                createBuffer(indexBufferSize,
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                            stagingIndexBuffer, stagingIndexBufferMemory);
+                
+                vkMapMemory(g_device, stagingIndexBufferMemory, 0, indexBufferSize, 0, &data);
+                memcpy(data, m_indices.data(), (size_t)indexBufferSize);
+                vkUnmapMemory(g_device, stagingIndexBufferMemory);
+                
+                vkAllocateCommandBuffers(g_device, &allocInfo, &commandBuffer);
+                vkBeginCommandBuffer(commandBuffer, &beginInfo);
+                
+                copyRegion.size = indexBufferSize;
+                vkCmdCopyBuffer(commandBuffer, stagingIndexBuffer, m_indexBuffer, 1, &copyRegion);
+                
+                vkEndCommandBuffer(commandBuffer);
+                
+                submitInfo.pCommandBuffers = &commandBuffer;
+                vkQueueSubmit(g_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+                vkQueueWaitIdle(g_graphicsQueue);
+                
+                vkFreeCommandBuffers(g_device, g_commandPool, 1, &commandBuffer);
+                vkDestroyBuffer(g_device, stagingIndexBuffer, nullptr);
+                vkFreeMemory(g_device, stagingIndexBufferMemory, nullptr);
+            }
+            
+        } catch (const std::exception& e) {
+            std::cerr << "[MeshResource] Failed to rebuild buffers: " << e.what() << std::endl;
+        }
+    }
     
     // Get vertex input binding description (for pipeline creation)
     VkVertexInputBindingDescription getVertexInputBinding() const {

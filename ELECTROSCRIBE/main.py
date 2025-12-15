@@ -82,7 +82,8 @@ MENU_BUTTONS = [
     ("+", "New Project", "new"),
     ("[O]", "Load Project", "load"),
     ("↓", "Save (Ctrl+S)", "save"),
-    (">", "Run", "run"),
+    (">", "Build & Run", "run"),
+    ("▶▶", "Run Only", "run_only"),
     ("▲", "Transpile HEIROC→HEIDIC", "transpile_heiroc"),
     ("▶", "Hotload", "hotload"),
     ("◉", "Compile Shaders", "compile_shaders"),
@@ -192,6 +193,7 @@ class Editor:
         self.last_hotload_time = 0  # Track last hotload time to avoid rapid-fire reloads
         self._building = False  # Flag to prevent auto-hotload during build
         self._run_clicked = False  # Flag to track if run button was clicked
+        self._run_process = None  # Store the running process to detect termination
         self._just_built = False  # Flag to prevent auto-hotload immediately after build
         self._setup_file_watcher()
         self.keywords = {
@@ -1439,6 +1441,14 @@ class Editor:
                     # Play triangle
                     points = [(center_x - 6, center_y - 6), (center_x - 6, center_y + 6), (center_x + 6, center_y)]
                     pygame.draw.polygon(surface, icon_color, points)
+            elif action == "run_only":
+                # Double play icon (two triangles side by side)
+                # Left triangle
+                points1 = [(center_x - 10, center_y - 6), (center_x - 10, center_y + 6), (center_x - 2, center_y)]
+                pygame.draw.polygon(surface, icon_color, points1)
+                # Right triangle
+                points2 = [(center_x + 2, center_y - 6), (center_x + 2, center_y + 6), (center_x + 10, center_y)]
+                pygame.draw.polygon(surface, icon_color, points2)
             elif action == "transpile_heiroc":
                 # Triangle pointing up (for HEIROC→HEIDIC transpile)
                 transpile_color = (120, 200, 120) if not is_disabled else (150, 150, 150)
@@ -1726,6 +1736,8 @@ class Editor:
                             shell=False,
                             env=env,
                         )
+                        # Store process reference to track termination
+                        self._run_process = proc
                         # Read output line by line in real-time
                         import sys
                         for line in proc.stdout:
@@ -1734,8 +1746,14 @@ class Editor:
                                 if line:  # Only add non-empty lines
                                     self._add_terminal_line(line)
                         proc.wait()
+                        # Process finished - reset checkmark
+                        self._run_clicked = False
+                        self._run_process = None
                     except Exception as e:
                         self._add_terminal_line(f"Error running program: {e}")
+                        # Reset checkmark on error
+                        self._run_clicked = False
+                        self._run_process = None
                 # threading is already imported at module level (line 22)
                 thread = threading.Thread(target=run_with_output, daemon=True)
                 thread.start()
@@ -1753,6 +1771,67 @@ class Editor:
                 self._just_built = False
             # threading is already imported at module level (line 22)
             threading.Thread(target=clear_just_built, daemon=True).start()
+    
+    def run_only(self):
+        """Run the executable without building (assumes it already exists)."""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.abspath(os.path.join(script_dir, ".."))
+        hd_path = os.path.abspath(self.original_hd_path)
+        project_dir = os.path.dirname(hd_path)
+        exe_name = os.path.splitext(os.path.basename(hd_path))[0] + ".exe"
+        exe_path = os.path.join(project_dir, exe_name)
+        
+        if not os.path.exists(exe_path):
+            self.log_lines.append(f"ERROR: Executable not found: {exe_name}")
+            self.log_lines.append("Please build the project first using the Build & Run button.")
+            self.status = "Executable not found"
+            return
+        
+        # Run program and capture output to terminal in real-time
+        self.status = "Run launched"
+        self.log_lines.append(f"Run: launched {exe_name}")
+        self._run_clicked = True  # Show checkmark
+        
+        def run_with_output():
+            try:
+                # Use unbuffered output and set environment for immediate flushing
+                env = os.environ.copy()
+                env['PYTHONUNBUFFERED'] = '1'  # For Python programs
+                run_cmd = [exe_path]
+                proc = subprocess.Popen(
+                    run_cmd,
+                    cwd=project_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',  # Replace invalid characters instead of failing
+                    bufsize=0,  # Unbuffered
+                    shell=False,
+                    env=env,
+                )
+                # Store process reference to track termination
+                self._run_process = proc
+                # Read output line by line in real-time
+                import sys
+                for line in proc.stdout:
+                    if line:
+                        line = line.rstrip("\n\r")
+                        if line:  # Only add non-empty lines
+                            self._add_terminal_line(line)
+                proc.wait()
+                # Process finished - reset checkmark
+                self._run_clicked = False
+                self._run_process = None
+            except Exception as e:
+                self._add_terminal_line(f"Error running program: {e}")
+                # Reset checkmark on error
+                self._run_clicked = False
+                self._run_process = None
+        
+        # threading is already imported at module level (line 22)
+        thread = threading.Thread(target=run_with_output, daemon=True)
+        thread.start()
     
     def _compile_shaders_for_build(self, project_dir):
         """Compile shaders in the project and output to compiler log.
@@ -3514,6 +3593,8 @@ main_loop(
                                 editor.draw(screen)
                                 pygame.display.flip()
                                 editor.run_commands()
+                            elif action == "run_only":
+                                editor.run_only()
                             elif action == "hotload":
                                 if editor.has_hot_systems():
                                     editor.hotload_dll()
