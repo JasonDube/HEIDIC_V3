@@ -112,9 +112,10 @@ user_questions.md
 ELECTROSCRIBE/empty.hd
 
 # Documentation
-DOCS/
-mkdocs/
-site/
-.mkdocs/
+DOCS/              # Local documentation (ignored - for local work)
+mkdocs/            # MkDocs config (ignored)
+site/              # Built site output (ignored)
+.mkdocs/           # MkDocs cache (ignored)
+# public-docs/     # Public documentation (tracked in git - this is what gets deployed)
 
 .aider*

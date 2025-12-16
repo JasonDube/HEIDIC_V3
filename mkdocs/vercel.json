@@ -1,0 +1,13 @@
+{
+  "buildCommand": "cd mkdocs && pip install -r requirements-docs.txt && cd .. && mkdocs build -f mkdocs/mkdocs.yml",
+  "outputDirectory": "site",
+  "installCommand": "cd mkdocs && pip install -r requirements-docs.txt",
+  "framework": null,
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
+

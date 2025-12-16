@@ -1,0 +1,138 @@
+site_name: HEIDIC Documentation
+site_description: Complete documentation for the HEIDIC programming language and EDEN Engine ecosystem
+site_author: HEIDIC Project
+site_url: https://heidic.dev
+
+# Documentation directory - point to public-docs folder (relative to project root when using -f)
+docs_dir: public-docs
+
+repo_name: HEIDIC
+repo_url: https://github.com/yourusername/heidic
+edit_uri: edit/main/DOCS/
+
+# Copyright
+copyright: Copyright &copy; 2024 HEIDIC Project
+
+# Theme
+theme:
+  name: material
+  palette:
+    # Light mode
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.annotate
+    - content.code.copy
+  icon:
+    repo: fontawesome/brands/github
+
+# Plugins
+plugins:
+  - search
+  - minify:
+      minify_html: true
+
+# Markdown extensions
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: heidic
+          class: heidic
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - admonition
+  - pymdownx.details
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+# Navigation
+nav:
+  - Home: index.md
+  - Features: FEATURES.md
+  - Examples: EXAMPLES.md
+  - Getting Started:
+    - Introduction: HEIDIC/INTRODUCTION.md
+    - Quick Start: HEIDIC/README.md
+    - EDEN vs HEIDIC: EDEN_VS_HEIDIC.md
+  - Language Reference:
+    - Language Specification: HEIDIC/LANGUAGE.md
+    - Complete Reference: HEIDIC/LANGUAGE_REFERENCE.md
+    - Error Types: HEIDIC/ERROR_TYPES.md
+    - HEIDIC vs C++: HEIDIC/HEIDIC_VS_CPP.md
+  - ECS & Components:
+    - ECS Queries Explained: ECS/ECS_QUERIES_EXPLAINED.md
+    - Component Framework: ECS/COMPONENT_FRAMEWORK_GUIDE.md
+    - SOA Access Pattern: SOA DOCS/SOA_ACCESS_PATTERN_EXPLAINED.md
+    - Entity System Analysis: ECS/ENTITY_SYSTEM_ANALYSIS.md
+  - Engine Features:
+    - CONTINUUM Hot-Reload:
+      - Overview: CONTINUUM-HOT RELOAD DOCS/HOT_RELOADING_EXPLAINED.md
+      - CONTINUUM System: CONTINUUM-HOT RELOAD DOCS/CONTINUUM.md
+      - Component Hot-Load: CONTINUUM-HOT RELOAD DOCS/component_hotload_explained.md
+      - Implementation Status: CONTINUUM-HOT RELOAD DOCS/HOT_RELOAD_IMPLEMENTATION_STATUS.md
+      - Testing: CONTINUUM-HOT RELOAD DOCS/HOT_RELOAD_TESTING.md
+  - Tools & Ecosystem:
+    - HEIROC Scripting: HEIDIC/HEIROC_ARCHITECTURE.md
+    - Note: Electroscribe, ESE, and NEUROSHELL docs are in their respective directories
+  - Resources & Formats:
+    - DDS Format Guide: DDS_FORMAT_GUIDE.md
+    - DDS Texture Strategy: DDS_TEXTURE_STRATEGY.md
+    - Resource System Plan: RESOURCE_SYSTEM_PLAN.md
+  - Knowledge Base:
+    - Shaders Explained: KNOWLEDGE BASE/shaders_explained.md
+    - Stage Field Explanation: KNOWLEDGE BASE/stage_field_explanation.md
+    - Zero Boilerplate: ZERO BOILERPLATE/ZERO_BOILERPLATE_EXPLAINED.md
+  - Development:
+    - Roadmap: HEIDIC/HEIDIC_ROADMAP.md
+    - Sprint 1 Plan: HEIDIC/SPRINT1_IMPLEMENTATION_PLAN.md
+    - Implementation Plans:
+      - SOA Implementation: SOA DOCS/SOA_IMPLEMENTATION_PLAN.md
+      - CUDA/OptiX Interop: HEIDIC/CUDA_OPTIX_INTEROP_IMPLEMENTATION.md
+      - Pattern Matching: HEIDIC/PATTERN_MATCHING_IMPLEMENTATION.md
+      - Type Inference: HEIDIC/TYPE_INFERENCE_IMPLEMENTATION.md
+      - Memory Ownership: HEIDIC/MEMORY_OWNERSHIP_IMPLEMENTATION.md
+      - String Handling: HEIDIC/STRING_HANDLING_IMPLEMENTATION.md
+      - Optional Types: HEIDIC/OPTIONAL_TYPES_IMPLEMENTATION.md
+      - Defer Statements: HEIDIC/DEFER_STATEMENTS_IMPLEMENTATION.md
+    - LLM Reviews: LLM TAKES/REVIEWS_SUMMARY.md
+
+# Extra files to include
+extra_css:
+  - public-docs/stylesheets/extra.css
+
+# Extra configuration
+extra:
+  version:
+    provider: mike
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/yourusername/heidic
+

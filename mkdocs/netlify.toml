@@ -1,0 +1,15 @@
+# Netlify configuration for MkDocs
+# Place this file in the project root, or adjust paths accordingly
+[build]
+  command = "cd mkdocs && pip install -r requirements-docs.txt && cd .. && mkdocs build -f mkdocs/mkdocs.yml"
+  publish = "site"
+
+[build.environment]
+  PYTHON_VERSION = "3.11"
+
+# Redirect rules for clean URLs
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
