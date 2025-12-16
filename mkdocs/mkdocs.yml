@@ -103,9 +103,12 @@ nav:
       - Component Hot-Load: CONTINUUM-HOT RELOAD DOCS/component_hotload_explained.md
       - Implementation Status: CONTINUUM-HOT RELOAD DOCS/HOT_RELOAD_IMPLEMENTATION_STATUS.md
       - Testing: CONTINUUM-HOT RELOAD DOCS/HOT_RELOAD_TESTING.md
-  - Tools & Ecosystem:
-    - HEIROC Scripting: HEIDIC/HEIROC_ARCHITECTURE.md
-    - Note: Electroscribe, ESE, and NEUROSHELL docs are in their respective directories
+  - Tools:
+    - EDEN Engine: TOOLS/EDEN_ENGINE.md
+    - Electroscribe: TOOLS/ELECTROSCRIBE.md
+    - ESE: TOOLS/ESE.md
+    - SLAG LEGION: TOOLS/SLAG_LEGION.md
+    - HEIROC: HEIDIC/HEIROC_ARCHITECTURE.md
   - Resources & Formats:
     - DDS Format Guide: DDS_FORMAT_GUIDE.md
     - DDS Texture Strategy: DDS_TEXTURE_STRATEGY.md

@@ -57,8 +57,8 @@ fn update_physics(q: query<Position, Velocity>): void {
 ```
 
 **Try it yourself:**
-- [`examples/query_iteration_example.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/examples/query_iteration_example.hd) - Beginner-friendly example
-- [`query_test/query_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/query_test/query_test.hd) - Comprehensive test suite
+- [query_iteration_example.hd](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/examples/query_iteration_example.hd) - Beginner-friendly example | [Knowledge Base →](#) *(coming soon)*
+- [query_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/query_test) - Comprehensive test suite | [Knowledge Base →](#) *(coming soon)*
 
 !!! tip "How to Run"
     Open these files in Electroscribe IDE (`ELECTROSCRIBE/main.py`) and click `>` to compile and run!
@@ -103,8 +103,8 @@ fn update_physics(q: query<Position, Velocity>): void {
 - ✅ Zero syntax difference - write the same code!
 
 **Try it yourself:**
-- [`soa_access_test/soa_access_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/soa_access_test/soa_access_test.hd) - SOA access tests
-- [`examples/mixed_aos_soa_query.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/examples/mixed_aos_soa_query.hd) - Mixed AoS/SOA queries
+- [soa_access_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/soa_access_test) - SOA access tests | [Knowledge Base →](#) *(coming soon)*
+- [mixed_aos_soa_query.hd](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/examples/mixed_aos_soa_query.hd) - Mixed AoS/SOA queries | [Knowledge Base →](#) *(coming soon)*
 
 **Documentation:**
 - [SOA Access Pattern Explained](SOA%20DOCS/SOA_ACCESS_PATTERN_EXPLAINED.md)
@@ -151,7 +151,7 @@ fn check_status(status: string): void {
 - ✅ Identifier patterns (enum variants, constants)
 
 **Try it yourself:**
-- [`pattern_matching_test/pattern_matching_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pattern_matching_test/pattern_matching_test.hd)
+- [pattern_matching_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pattern_matching_test) | [Knowledge Base →](#) *(coming soon)*
 
 **Documentation:**
 - [Pattern Matching Implementation](HEIDIC/PATTERN_MATCHING_IMPLEMENTATION.md)
@@ -189,7 +189,7 @@ fn main(): void {
 - ✅ Compile-time null safety checks
 
 **Try it yourself:**
-- [`optional_types_test/optional_types_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/optional_types_test/optional_types_test.hd)
+- [optional_types_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/optional_types_test) | [Knowledge Base →](#) *(coming soon)*
 
 **Documentation:**
 - [Optional Types Implementation](HEIDIC/OPTIONAL_TYPES_IMPLEMENTATION.md)
@@ -224,7 +224,7 @@ fn process_file(path: string): void {
 - ✅ Scope-based cleanup
 
 **Try it yourself:**
-- [`defer_test/defer_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/defer_test/defer_test.hd)
+- [defer_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/defer_test) | [Knowledge Base →](#) *(coming soon)*
 
 **Documentation:**
 - [Defer Statements Implementation](HEIDIC/DEFER_STATEMENTS_IMPLEMENTATION.md)
@@ -256,7 +256,7 @@ fn display_player_info(name: string, health: i32, score: f32): void {
 - ✅ Zero runtime overhead (compiled to concatenation)
 
 **Try it yourself:**
-- [`string_interpolation_test/string_interpolation_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/string_interpolation_test/string_interpolation_test.hd)
+- [string_interpolation_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/string_interpolation_test) | [Knowledge Base →](#) *(coming soon)*
 
 **Documentation:**
 - [String Handling Implementation](HEIDIC/STRING_HANDLING_IMPLEMENTATION.md)
@@ -295,7 +295,7 @@ Type mismatch: cannot assign 'string' to 'f32'
 - ✅ Error recovery (poison types)
 
 **Try it yourself:**
-- [`error_test/error_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/error_test/error_test.hd) - Intentionally contains errors to demonstrate enhanced error reporting
+- [error_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/error_test) - Intentionally contains errors to demonstrate enhanced error reporting | [Knowledge Base →](#) *(coming soon)*
 
 **Documentation:**
 - [Error Types Reference](HEIDIC/ERROR_TYPES.md)
@@ -329,7 +329,7 @@ fn invalid_function(frame: FrameArena): [Vec3] {
 - ✅ Prevents use-after-free bugs before they happen
 
 **Try it yourself:**
-- [`memory_ownership_test/memory_ownership_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/memory_ownership_test/memory_ownership_test.hd)
+- [memory_ownership_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/memory_ownership_test) | [Knowledge Base →](#) *(coming soon)*
 
 **Documentation:**
 - [Memory Ownership Implementation](HEIDIC/MEMORY_OWNERSHIP_IMPLEMENTATION.md)
@@ -407,9 +407,9 @@ fn main(): void {
 - ✅ Automatic cleanup and error handling
 
 **Try it yourself:**
-- [`pipeline_test/pipeline_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pipeline_test/pipeline_test.hd) - Pipeline declarations
-- [`resource_test/resource_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/resource_test/resource_test.hd) - Resource loading
-- [`texture_resource_test/texture_resource_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/texture_resource_test/texture_resource_test.hd) - Texture resources
+- [pipeline_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pipeline_test) - Pipeline declarations | [Knowledge Base →](#) *(coming soon)*
+- [resource_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/resource_test) - Resource loading | [Knowledge Base →](#) *(coming soon)*
+- [texture_resource_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/texture_resource_test) - Texture resources | [Knowledge Base →](#) *(coming soon)*
 
 **Documentation:**
 - [Zero Boilerplate Explained](ZERO%20BOILERPLATE/ZERO_BOILERPLATE_EXPLAINED.md)
@@ -456,7 +456,7 @@ The Vulkan infrastructure is solid and production-ready, but **significant manua
 **Not recommended for:** Users expecting "declare and use" simplicity
 
 **Try it yourself:**
-- [`bindless_test/bindless_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/bindless_test/bindless_test.hd)
+- [bindless_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/bindless_test) | [Knowledge Base →](#) *(coming soon)*
 
 **Documentation:**
 - [Bindless Implementation Report](HEIDIC/BINDLESS_IMPLEMENTATION.md) - Detailed status and limitations
@@ -506,7 +506,7 @@ The framework and design are solid, but the implementation is a **prototype**. T
 **Not recommended for:** Production use (code won't compile)
 
 **Try it yourself:**
-- [`cuda_test/cuda_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/cuda_test/cuda_test.hd)
+- [cuda_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/cuda_test) | [Knowledge Base →](#) *(coming soon)*
 
 **Documentation:**
 - [CUDA/OptiX Implementation Report](HEIDIC/CUDA_OPTIX_INTEROP_IMPLEMENTATION.md) - Detailed status and limitations
@@ -583,8 +583,8 @@ fn main(): void {
 - ✅ **RAII Lifecycle** - Automatic cleanup
 
 **Try it yourself:**
-- [`resource_test/resource_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/resource_test/resource_test.hd)
-- [`texture_resource_test/texture_resource_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/texture_resource_test/texture_resource_test.hd)
+- [resource_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/resource_test) | [Knowledge Base →](#) *(coming soon)*
+- [texture_resource_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/texture_resource_test) | [Knowledge Base →](#) *(coming soon)*
 
 ---
 

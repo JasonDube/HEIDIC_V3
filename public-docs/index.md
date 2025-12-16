@@ -10,29 +10,29 @@
 HEIDIC includes many powerful features that are **fully implemented and ready to use**:
 
 - ✅ **Query Iteration** - `for entity in q` syntax for ECS queries
-  - [Try it →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/examples/query_iteration_example.hd)
+  - [Try it →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/examples/query_iteration_example.hd) | [Knowledge Base →](#) *(coming soon)*
 - ✅ **SOA Components** - Transparent Structure-of-Arrays access
-  - [Try it →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/soa_access_test/soa_access_test.hd)
+  - [Try it →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/soa_access_test) | [Knowledge Base →](#) *(coming soon)*
 - ✅ **Pattern Matching** - Rust-style `match` expressions
-  - [Try it →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pattern_matching_test/pattern_matching_test.hd)
+  - [Try it →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pattern_matching_test) | [Knowledge Base →](#) *(coming soon)*
 - ✅ **Optional Types** - Null-safe `?Type` syntax
-  - [Try it →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/optional_types_test/optional_types_test.hd)
+  - [Try it →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/optional_types_test) | [Knowledge Base →](#) *(coming soon)*
 - ✅ **Defer Statements** - Automatic cleanup with `defer`
-  - [Try it →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/defer_test/defer_test.hd)
+  - [Try it →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/defer_test) | [Knowledge Base →](#) *(coming soon)*
 - ✅ **String Interpolation** - `"Hello, {name}!"` syntax
-  - [Try it →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/string_interpolation_test/string_interpolation_test.hd)
+  - [Try it →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/string_interpolation_test) | [Knowledge Base →](#) *(coming soon)*
 - ✅ **Memory Ownership** - Compile-time validation prevents use-after-free
-  - [Try it →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/memory_ownership_test/memory_ownership_test.hd)
+  - [Try it →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/memory_ownership_test) | [Knowledge Base →](#) *(coming soon)*
 - ✅ **Zero-Boilerplate** - Declarative pipelines and resources (400+ lines → 10 lines)
-  - [Try pipelines →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pipeline_test/pipeline_test.hd)
-  - [Try resources →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/resource_test/resource_test.hd)
+  - [Try pipelines →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pipeline_test) | [Knowledge Base →](#) *(coming soon)*
+  - [Try resources →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/resource_test) | [Knowledge Base →](#) *(coming soon)*
 - ⚠️ **Automatic Bindless** - Infrastructure complete (~70%), shader integration pending
-  - [Try it →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/bindless_test/bindless_test.hd)
+  - [Try it →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/bindless_test) | [Knowledge Base →](#) *(coming soon)*
 - ⚠️ **CUDA/OptiX Interop** - Prototype framework complete, code generation non-functional
-  - [Try it →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/cuda_test/cuda_test.hd)
+  - [Try it →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/cuda_test) | [Knowledge Base →](#) *(coming soon)*
 - ✅ **Hot-Reload** - Edit code, shaders, and components while running
 - ✅ **Enhanced Errors** - Clear error messages with context and suggestions
-  - [Try it →](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/error_test/error_test.hd)
+  - [Try it →](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/error_test) | [Knowledge Base →](#) *(coming soon)*
 
 **[See All Features →](FEATURES.md)** - Complete feature showcase with examples  
 **[Browse All Examples →](EXAMPLES.md)** - Quick reference to all test files
@@ -55,9 +55,10 @@ HEIDIC includes many powerful features that are **fully implemented and ready to
 - **[SOA Access Pattern](SOA%20DOCS/SOA_ACCESS_PATTERN_EXPLAINED.md)** - Structure-of-Arrays optimization
 
 ### 🛠️ Tools & Ecosystem
-- **[Electroscribe IDE](../ELECTROSCRIBE/README.md)** - Integrated development environment
-- **[ESE Editor](../ELECTROSCRIBE/PROJECTS/ESE/README.md)** - 3D model editor
-- **[NEUROSHELL](../NEUROSHELL/README.md)** - Lightweight in-game UI system
+- **[EDEN Engine](TOOLS/EDEN_ENGINE.md)** - Runtime game engine
+- **[Electroscribe](TOOLS/ELECTROSCRIBE.md)** - Integrated development environment
+- **[ESE](TOOLS/ESE.md)** - 3D model editor
+- **[SLAG LEGION](TOOLS/SLAG_LEGION.md)** - Game project
 - **[HEIROC](HEIDIC/HEIROC_ARCHITECTURE.md)** - Configuration scripting language
 
 ## 🎉 Recently Completed Features
@@ -144,20 +145,20 @@ fn main(): void {
 }
 ```
 
-**Try this example:** [`query_iteration_example.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/examples/query_iteration_example.hd)
+**Try this example:** [query_iteration_example.hd](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/examples/query_iteration_example.hd)
 
 ### More Examples
 
-- **Pattern Matching:** [`pattern_matching_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pattern_matching_test/pattern_matching_test.hd)
-- **Optional Types:** [`optional_types_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/optional_types_test/optional_types_test.hd)
-- **Defer Statements:** [`defer_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/defer_test/defer_test.hd)
-- **SOA Access:** [`soa_access_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/soa_access_test/soa_access_test.hd)
-- **String Interpolation:** [`string_interpolation_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/string_interpolation_test/string_interpolation_test.hd)
-- **Memory Ownership:** [`memory_ownership_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/memory_ownership_test/memory_ownership_test.hd)
-- **Zero-Boilerplate Pipelines:** [`pipeline_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pipeline_test/pipeline_test.hd)
-- **Zero-Boilerplate Resources:** [`resource_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/resource_test/resource_test.hd)
-- **Error Messages:** [`error_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/error_test/error_test.hd)
-- **CUDA/OptiX (Prototype):** [`cuda_test.hd`](../ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/cuda_test/cuda_test.hd)
+- **Pattern Matching:** [pattern_matching_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pattern_matching_test)
+- **Optional Types:** [optional_types_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/optional_types_test)
+- **Defer Statements:** [defer_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/defer_test)
+- **SOA Access:** [soa_access_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/soa_access_test)
+- **String Interpolation:** [string_interpolation_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/string_interpolation_test)
+- **Memory Ownership:** [memory_ownership_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/memory_ownership_test)
+- **Zero-Boilerplate Pipelines:** [pipeline_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/pipeline_test)
+- **Zero-Boilerplate Resources:** [resource_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/resource_test)
+- **Error Messages:** [error_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/error_test)
+- **CUDA/OptiX (Prototype):** [cuda_test](https://github.com/JasonDube/HEIDIC/tree/main/ELECTROSCRIBE/PROJECTS/OLD%20PROJECTS/cuda_test)
 
 **[See All Examples →](EXAMPLES.md)** - Complete list of test files  
 **[See All Features →](FEATURES.md)** - Detailed feature documentation

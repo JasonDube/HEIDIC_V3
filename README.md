@@ -2,6 +2,7 @@
 
 [![Documentation](https://img.shields.io/badge/Documentation-Online-blue)](https://jasondube.github.io/HEIDIC/)
 [![GitHub](https://img.shields.io/badge/GitHub-View%20Source-blue?logo=github)](https://github.com/JasonDube/HEIDIC)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **HEIDIC** is a statically-typed, compiled programming language designed specifically for building high-performance game engines and game logic. It compiles to native C++17 code, providing zero-cost abstractions while maintaining a clean, game-focused syntax.
 
