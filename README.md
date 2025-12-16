@@ -195,15 +195,16 @@ HEIDIC/
 
 ## Documentation
 
-For complete documentation, see the [HEIDIC Documentation](DOCS/index.md) (when available locally).
+📚 **Full Documentation:** [https://yourusername.github.io/heidic/](https://yourusername.github.io/heidic/)
 
-Key documentation topics:
-- [Language Specification](DOCS/HEIDIC/LANGUAGE.md)
-- [Language Reference](DOCS/HEIDIC/LANGUAGE_REFERENCE.md)
-- [ECS & Components](DOCS/ECS/ECS_QUERIES_EXPLAINED.md)
-- [CONTINUUM Hot-Reload](DOCS/CONTINUUM-HOT%20RELOAD%20DOCS/HOT_RELOADING_EXPLAINED.md)
-- [Features Showcase](DOCS/FEATURES.md)
-- [Examples](DOCS/EXAMPLES.md)
+The complete HEIDIC documentation is available online, including:
+- [Features Showcase](https://yourusername.github.io/heidic/FEATURES/)
+- [Examples](https://yourusername.github.io/heidic/EXAMPLES/)
+- [Language Reference](https://yourusername.github.io/heidic/HEIDIC/LANGUAGE_REFERENCE/)
+- [ECS & Components](https://yourusername.github.io/heidic/ECS/ECS_QUERIES_EXPLAINED/)
+- [CONTINUUM Hot-Reload](https://yourusername.github.io/heidic/CONTINUUM-HOT%20RELOAD%20DOCS/HOT_RELOADING_EXPLAINED/)
+
+> **Note:** Replace `yourusername` with your actual GitHub username in the URLs above.
 
 ## Performance
 

@@ -3,8 +3,11 @@ site_description: Complete documentation for the HEIDIC programming language and
 site_author: HEIDIC Project
 site_url: https://heidic.dev
 
-# Documentation directory - point to public-docs folder (relative to project root when using -f)
-docs_dir: public-docs
+# Documentation directory - point to public-docs folder (relative to config file location)
+docs_dir: ../public-docs
+
+# Site directory - output to project root (relative to config file location)
+site_dir: ../site
 
 repo_name: HEIDIC
 repo_url: https://github.com/yourusername/heidic
@@ -126,7 +129,7 @@ nav:
 
 # Extra files to include
 extra_css:
-  - public-docs/stylesheets/extra.css
+  - ../public-docs/stylesheets/extra.css
 
 # Extra configuration
 extra:
