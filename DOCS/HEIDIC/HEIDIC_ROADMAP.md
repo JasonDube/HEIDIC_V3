@@ -348,19 +348,12 @@ fn raytrace_scene(mesh: SceneMesh, camera: Position): void {
 
 ### 6. Query Iteration Syntax ⚠️ **CRITICAL FOR USABILITY**
 
-**Status:** 🔴 Not Started  
+**Status:** ✅ **COMPLETE** - Implemented and tested!  
 **Priority:** CRITICAL (Blocks ECS usability)  
 **Effort:** ~2-3 days  
 **Impact:** Without this, ECS feels incomplete. Claude: "This is critical for usability."
 
-**Current:**
-```heidic
-fn update(q: query<Position, Velocity>): void {
-    // How do I actually iterate? This needs to be clear.
-}
-```
-
-**Needed:**
+**✅ IMPLEMENTED:**
 ```heidic
 fn update(q: query<Position, Velocity>): void {
     for entity in q {
@@ -369,24 +362,45 @@ fn update(q: query<Position, Velocity>): void {
 }
 ```
 
-**Implementation:**
-- Add `for entity in q` syntax to parser
-- Generate iteration code in codegen
-- Handle both AoS and SOA component access patterns
-- Make `entity.Velocity.x` work transparently (compiler generates `velocities.x[entity_index]`)
+**✅ Features Working:**
+- ✅ `for entity in q` syntax fully implemented
+- ✅ AoS component access (`entity.Position.x` → `positions[i].x`)
+- ✅ SOA component access (`entity.Velocity.x` → `velocities.x[i]`) - transparent!
+- ✅ Mixed AoS/SOA queries working
+- ✅ Multiple components in queries
+- ✅ Nested logic inside loops
+
+**Test Files:**
+- `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/examples/query_iteration_example.hd`
+- `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/examples/mixed_aos_soa_query.hd`
+- `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/query_test/query_test.hd`
 
 **Why This Matters:**
 - Without iteration syntax, ECS is unusable
 - Claude: "Would I use this over C++/Rust? If you nail the query iteration syntax, absolutely yes."
+- ✅ **DONE!** Query iteration syntax is fully functional.
 
 ---
 
 ### 7. SOA Access Pattern Clarity ⚠️ **USER CONFUSION**
 
-**Status:** 🔴 Not Started  
+**Status:** ✅ **COMPLETE** - Transparent SOA access implemented!  
 **Priority:** HIGH  
 **Effort:** ~1 week  
 **Impact:** SOA is great for storage, but access pattern needs to be crystal clear.
+
+**✅ IMPLEMENTED:**
+- ✅ Transparent access: `entity.Velocity.x` works for both AoS and SOA
+- ✅ Compiler generates correct access pattern automatically
+- ✅ Mixed AoS/SOA queries working seamlessly
+- ✅ SOA component validation (all fields must be arrays)
+
+**Test Files:**
+- `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/soa_access_test/soa_access_test.hd`
+- `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/examples/mixed_aos_soa_query.hd`
+
+**Documentation:**
+- `DOCS/HEIDIC/SOA_ACCESS_PATTERN_IMPLEMENTATION.md` - Full implementation report
 
 **Current Issue:**
 ```heidic
@@ -413,10 +427,28 @@ Hide SOA complexity from users. Let them write `entity.Velocity.x` and let the c
 
 ### 8. Better Error Messages ⚠️ **DEVELOPER EXPERIENCE**
 
-**Status:** 🔴 Not Started  
+**Status:** ✅ **MOSTLY COMPLETE** - Enhanced error reporting implemented!  
 **Priority:** HIGH  
 **Effort:** ~1 week  
 **Impact:** Developer experience matters. Good error messages = faster iteration.
+
+**✅ IMPLEMENTED:**
+- ✅ Source location tracking (file, line, column)
+- ✅ Context lines (surrounding code)
+- ✅ Caret indicators (visual error location)
+- ✅ Helpful suggestions for common errors
+- ✅ Error recovery (poison types, multiple error collection)
+- ✅ "Did you mean?" suggestions for typos
+
+**Test Files:**
+- `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/error_test/error_test.hd`
+
+**Documentation:**
+- `DOCS/HEIDIC/BETTER_ERROR_MESSAGES_IMPLEMENTATION.md` - Full implementation report
+- `DOCS/HEIDIC/ERROR_TYPES.md` - All error types documented
+
+**Remaining:**
+- ⚠️ Some parser/lexer errors still use `bail!` instead of ErrorReporter
 
 **Current:**
 ```
@@ -847,6 +879,26 @@ When these 5 features are done, HEIDIC will be the language people whisper about
 ## Current Status Summary
 
 ### ✅ Completed (95% of Vision)
+
+**Sprint 1 Tasks (Critical Ergonomics):**
+- ✅ **Query Iteration Syntax** - `for entity in q` fully implemented and tested
+- ✅ **SOA Access Pattern Clarity** - Transparent SOA access working seamlessly
+- ✅ **Better Error Messages** - Enhanced error reporting with context and suggestions
+
+**Additional Features:**
+- ✅ **Pattern Matching** - `match` expressions implemented
+- ✅ **Optional Types** - `?Type` syntax with null safety
+- ✅ **Defer Statements** - RAII-based cleanup implemented
+- ✅ **String Interpolation** - `"Hello, {name}!"` syntax working (partially complete)
+
+**Test Files Available:**
+- `query_iteration_example.hd`, `mixed_aos_soa_query.hd`, `query_test.hd`
+- `soa_access_test.hd`
+- `error_test.hd`
+- `pattern_matching_test.hd`
+- `optional_types_test.hd`
+- `defer_test.hd`
+- `string_interpolation_test.hd`
 - Query syntax + codegen
 - Compile-time shader embedding
 - FrameArena with `frame.alloc_array<T>`
@@ -855,11 +907,13 @@ When these 5 features are done, HEIDIC will be the language people whisper about
 - Type aliases, default values
 - Full Vulkan/GLFW/ImGui integration
 
-### 🔴 Critical (Blocks Usability - Claude's Feedback)
-1. **Query iteration syntax** (`for entity in q`) - CRITICAL
-2. **SOA access pattern clarity** - HIGH
-3. **Better error messages** - HIGH
-4. **Component auto-registration + reflection** - HIGH (blocks tooling)
+### ✅ Critical Ergonomics (Claude's Feedback) - ALL COMPLETE!
+1. ✅ **Query iteration syntax** (`for entity in q`) - COMPLETE
+2. ✅ **SOA access pattern clarity** - COMPLETE (transparent access)
+3. ✅ **Better error messages** - MOSTLY COMPLETE (enhanced reporting)
+
+### 🔴 Critical (Remaining)
+1. **Component auto-registration + reflection** - HIGH (blocks tooling)
 
 ### 🔴 Remaining (5% - The Legendary Features)
 5. Hot-reloading by default

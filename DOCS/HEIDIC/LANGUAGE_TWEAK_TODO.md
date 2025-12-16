@@ -47,26 +47,32 @@ These are the features that will make HEIDIC legendary:
 
 **Note:** Gemini emphasizes that compiler and tooling polish are **essential for professional workflows and adoption in complex projects**. These are not optional - they're critical for adoption.
 
-- [ ] **Query Iteration Syntax** - `for entity in q` syntax for ECS queries
-  - Status: 🔴 Not Started
+- [x] **Query Iteration Syntax** - `for entity in q` syntax for ECS queries
+  - Status: ✅ **COMPLETE** - Implemented and tested!
   - Priority: CRITICAL (Blocks ECS usability)
   - Effort: ~2-3 days
   - Impact: Without this, ECS feels incomplete. Claude: "This is critical for usability."
-  - Implementation: Add `for entity in q` syntax to parser, generate iteration code, handle AoS/SOA access patterns
+  - Implementation: ✅ Added `for entity in q` syntax to parser, generate iteration code, handle AoS/SOA access patterns
+  - Test Files: `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/examples/query_iteration_example.hd`, `query_test/query_test.hd`
 
-- [ ] **SOA Access Pattern Clarity** - Make `entity.Velocity.x` work transparently
-  - Status: 🔴 Not Started
+- [x] **SOA Access Pattern Clarity** - Make `entity.Velocity.x` work transparently
+  - Status: ✅ **COMPLETE** - Transparent SOA access implemented!
   - Priority: HIGH
   - Effort: ~1 week
   - Impact: SOA is great for storage, but access pattern needs to be crystal clear
-  - Implementation: Hide SOA complexity - compiler generates `velocities.x[entity_index]` behind the scenes
+  - Implementation: ✅ Hide SOA complexity - compiler generates `velocities.x[entity_index]` behind the scenes
+  - Test Files: `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/soa_access_test/soa_access_test.hd`
+  - Documentation: `DOCS/HEIDIC/SOA_ACCESS_PATTERN_IMPLEMENTATION.md`
 
-- [ ] **Better Error Messages** - Line numbers, context, suggestions
-  - Status: 🔴 Not Started
+- [x] **Better Error Messages** - Line numbers, context, suggestions
+  - Status: ✅ **MOSTLY COMPLETE** - Enhanced error reporting implemented!
   - Priority: HIGH
   - Effort: ~1 week
   - Impact: Developer experience matters. Good error messages = faster iteration
-  - Implementation: Add line/column tracking, context-aware errors, suggestions, multiple errors
+  - Implementation: ✅ Added line/column tracking, context-aware errors, suggestions, multiple errors
+  - Test Files: `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/error_test/error_test.hd`
+  - Documentation: `DOCS/HEIDIC/BETTER_ERROR_MESSAGES_IMPLEMENTATION.md`
+  - Remaining: Some parser/lexer errors still use `bail!` instead of ErrorReporter
 
 - [ ] **Memory Ownership Semantics** - RAII + compiler checks
   - Status: 🔴 Not Started
@@ -176,30 +182,40 @@ These are the features that will make HEIDIC legendary:
   - Priority: MEDIUM
   - Effort: ~2-3 days
   - Impact: Less boilerplate, more modern feel
+  - Note: Test file exists: `type_inference_test.hd`
 
-- [ ] **String Handling** - Documentation, interpolation, manipulation functions
-  - Status: 🔴 Not Started
+- [x] **String Handling** - Documentation, interpolation, manipulation functions
+  - Status: ✅ **PARTIALLY COMPLETE** - String interpolation implemented!
   - Priority: MEDIUM
-  - Effort: ~1 week
+  - Effort: ~1 week (actual: ~2 hours for interpolation)
   - Impact: Clear string operations and ownership model
+  - Test Files: `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/string_interpolation_test/string_interpolation_test.hd`
+  - Documentation: `DOCS/HEIDIC/STRING_HANDLING_IMPLEMENTATION.md`
+  - Remaining: String variable interpolation bug, manipulation functions pending
 
-- [ ] **Pattern Matching** - `match` expression for error handling
-  - Status: 🔴 Not Started
+- [x] **Pattern Matching** - `match` expression for error handling
+  - Status: ✅ **COMPLETE** - Pattern matching implemented!
   - Priority: MEDIUM
-  - Effort: ~1 week
+  - Effort: ~1 week (actual: ~2 hours)
   - Impact: Makes error handling and state machines much cleaner
+  - Test Files: `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/pattern_matching_test/pattern_matching_test.hd`
+  - Documentation: `DOCS/HEIDIC/PATTERN_MATCHING_IMPLEMENTATION.md`
 
-- [ ] **Optional Types** - `?T` syntax for nullable types
-  - Status: 🔴 Not Started
+- [x] **Optional Types** - `?T` syntax for nullable types
+  - Status: ✅ **COMPLETE** - Optional types implemented!
   - Priority: MEDIUM
-  - Effort: ~1 week
+  - Effort: ~1 week (actual: ~2 hours)
   - Impact: Eliminates null pointer bugs
+  - Test Files: `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/optional_types_test/optional_types_test.hd`
+  - Documentation: `DOCS/HEIDIC/OPTIONAL_TYPES_IMPLEMENTATION.md`
 
-- [ ] **Defer Statements** - `defer` for automatic cleanup
-  - Status: 🔴 Not Started
+- [x] **Defer Statements** - `defer` for automatic cleanup
+  - Status: ✅ **COMPLETE** - Defer statements implemented!
   - Priority: LOW
-  - Effort: ~2-3 days
+  - Effort: ~2-3 days (actual: ~2 hours)
   - Impact: Ensures cleanup code always runs
+  - Test Files: `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/defer_test/defer_test.hd`
+  - Documentation: `DOCS/HEIDIC/DEFER_STATEMENTS_IMPLEMENTATION.md`
 
 ## Potential Issues to Address
 

@@ -169,16 +169,16 @@ Without hot-load:
 
 ## Real-World Example: LLM Agent Workflow
 
-Imagine you're using an agent like **Aider** with HEIDIC:
+Imagine you're using an LLM agent with HEIDIC:
 
 ```bash
 # You're playing your game, fighting a boss
 # You realize you need a "mana" system
 
-# You ask Aider (powered by LLM):
-aider: "Add a mana component with current/max fields and regeneration"
+# You ask the LLM agent:
+"Add a mana component with current/max fields and regeneration"
 
-# Aider (via LLM):
+# The LLM agent:
 1. Reads your HEIDIC files
 2. Generates Mana component
 3. Generates migration code
@@ -189,9 +189,9 @@ aider: "Add a mana component with current/max fields and regeneration"
 8. ✅ You can test it immediately
 
 # You report: "Mana works! But I want it to regenerate every second"
-aider: "Adding regeneration logic to the update system"
+"Adding regeneration logic to the update system"
 
-# Aider:
+# The LLM agent:
 1. Modifies update system
 2. Saves file
 3. ✅ Hot-loads system (DLL swap)

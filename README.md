@@ -1,48 +1,58 @@
 # HEIDIC
 
-A statically-typed, compiled language designed for building high-performance game engines. HEIDIC compiles to native C++17 code for maximum performance.
+**HEIDIC** is a statically-typed, compiled programming language designed specifically for building high-performance game engines and game logic. It compiles to native C++17 code, providing zero-cost abstractions while maintaining a clean, game-focused syntax.
 
-## Overview
+## What is HEIDIC?
 
-HEIDIC is a programming language designed for **building game engines and game logic**. It provides zero-cost abstractions, direct integration with Vulkan and GLFW, and built-in support for Entity Component Systems (ECS). It features an integrated development environment (Electroscribe) with hot-reload capabilities, making it ideal for rapid game development.
+HEIDIC is more than just a language—it's a complete ecosystem for game development:
 
-**Primary Focus:**
-- **HEIDIC**: Optimized for building game engines (rendering systems, ECS frameworks, resource managers, physics engines)
-- **Also**: Can be used for game logic (gameplay systems, AI, game state management)
-- **Not**: A lightweight scripting language (like Lua or Python) - it's a full compiled language
+- **HEIDIC Language** - The main programming language (compiles to C++17)
+- **EDEN Engine** - The runtime game engine and standard library (Vulkan, ECS, resources)
+- **Electroscribe IDE** - Integrated development environment with hot-reload
+- **CONTINUUM** - Hot-reload system for rapid iteration
+- **NEUROSHELL** - Lightweight in-game UI system
+- **HEIROC** - Configuration scripting language (transpiles to HEIDIC)
+- **ESE** - Echo Synapse Editor (3D model editor)
 
-HEIDIC is a complete programming language that can be used for both engine code and game logic, but it's particularly well-suited for engine development due to its performance characteristics and built-in engine features.
+### Core Philosophy
 
-## Key Features
+HEIDIC is built with one primary goal: **making game engine development faster, safer, and more maintainable** without sacrificing performance. It combines:
 
-### Language Features
+- **Game-focused syntax** - Language features designed for common game development patterns
+- **Zero-cost abstractions** - Compiles to efficient C++ code with no runtime overhead
+- **Built-in engine features** - ECS, hot-reload, and graphics APIs integrated at the language level
+- **Type safety** - Static typing with type inference to catch errors at compile time
+- **No garbage collection** - Manual memory management for predictable performance
 
-- **Static Typing**: Full type safety with type inference
-- **Zero-Cost Abstractions**: Compiles to efficient C++ code
-- **No Garbage Collection**: Manual memory management for predictable performance
-- **ECS Support**: Built-in Entity Component System with SOA (Structure-of-Arrays) layouts
-- **Hot Reload**: Runtime code reloading for rapid iteration
-- **Direct API Access**: Native integration with Vulkan, GLFW, and ImGui
+## ✨ Key Features
 
-### Type System
+### Language Features (All Production-Ready!)
 
-#### Primitive Types
-- `i32` - 32-bit signed integer
-- `i64` - 64-bit signed integer
-- `f32` - 32-bit floating point
-- `f64` - 64-bit floating point
-- `bool` - Boolean (`true` or `false`)
-- `string` - String type
-- `void` - No return value
+- ✅ **Query Iteration** - `for entity in q` syntax for ECS queries
+- ✅ **SOA Components** - Transparent Structure-of-Arrays access (same syntax as AoS!)
+- ✅ **Pattern Matching** - Rust-style `match` expressions
+- ✅ **Optional Types** - Null-safe `?Type` syntax
+- ✅ **Defer Statements** - Automatic cleanup with `defer`
+- ✅ **String Interpolation** - `"Hello, {name}!"` syntax
+- ✅ **Memory Ownership** - Compile-time validation prevents use-after-free bugs
+- ✅ **Zero-Boilerplate** - Declarative pipelines and resources (400+ lines → 10 lines)
+- ✅ **Enhanced Errors** - Clear error messages with context and suggestions
+- ✅ **Hot-Reload** - Edit code, shaders, and components while running
 
-#### Composite Types
-- **Arrays**: `[T]` - Dynamic array of type T
-- **Structs**: User-defined data structures
-- **Components**: Special structs for ECS with default value support
-- **Math Types**: `Vec2`, `Vec3`, `Vec4`, `Mat4`, `Quat`
-- **Type Aliases**: Create shorter names for existing types
+### Engine Features
 
-#### ECS Components
+- ✅ **ECS System** - Built-in Entity Component System with SOA layouts
+- ✅ **Vulkan Integration** - Direct access to Vulkan rendering APIs
+- ✅ **Resource Management** - One-line texture, mesh, and audio loading
+- ✅ **CONTINUUM Hot-Reload** - Runtime code reloading (systems, shaders, components)
+- ✅ **Frame Arena** - Fast frame-scoped memory allocation
+
+### Prototype Features (Framework Complete)
+
+- ⚠️ **Automatic Bindless** - Infrastructure complete (~70%), shader integration pending
+- ⚠️ **CUDA/OptiX Interop** - Prototype framework complete, code generation non-functional
+
+## Quick Example
 
 ```heidic
 component Position {
@@ -51,57 +61,76 @@ component Position {
     z: f32
 }
 
-component Transform {
-    position: Vec3,
-    rotation: Quat,
-    scale: Vec3 = Vec3(1, 1, 1)  // default value
+component Velocity {
+    x: f32,
+    y: f32,
+    z: f32
+}
+
+@hot
+system physics(query Position, Velocity) {
+    for entity in query {
+        entity.Position.x += entity.Velocity.x * delta_time;
+        entity.Position.y += entity.Velocity.y * delta_time;
+        entity.Position.z += entity.Velocity.z * delta_time;
+    }
+}
+
+fn main(): void {
+    print("Hello, HEIDIC!");
 }
 ```
 
-### Control Flow
+## The HEIDIC Ecosystem
 
-- `if/else` statements
-- `while` loops
-- `loop` (infinite loops)
-- `match` expressions (pattern matching)
-- `defer` statements (execute on scope exit)
+### HEIDIC Language
+The main programming language that compiles to C++17. Write game engine code with clean syntax, zero-cost abstractions, and built-in ECS support.
 
-### Standard Library
+### EDEN Engine
+The runtime game engine that provides:
+- **Vulkan Rendering** - Low-level graphics API integration
+- **ECS Runtime** - Entity Component System implementation
+- **Resource Management** - Texture, mesh, and audio loading
+- **CONTINUUM Hot-Reload** - Runtime code reloading system
+- **Standard Library** - Math, utilities, and engine APIs
 
-The language includes built-in support for:
-- **Math**: Vector and matrix operations (`Vec2`, `Vec3`, `Vec4`, `Mat4`, `Quat`)
-- **Resources**: Texture, mesh, and audio resource management
-- **ECS**: Entity Component System with queries and systems
-- **Rendering**: Vulkan renderer integration
-- **Windowing**: GLFW window management
-- **UI**: ImGui integration for in-game UI
-
-## Electroscribe IDE
-
-HEIDIC includes **Electroscribe**, a lightweight Pygame-based IDE with:
-
-- **Syntax Highlighting**: Full HEIDIC syntax support
-- **Project Management**: Create and manage HEIDIC projects
-- **Integrated Build Pipeline**: Compile, build, and run with one click
-- **Hot-Reload Support**: Automatic reloading of `@hot` systems
-- **C++ View**: Toggle between HEIDIC source and generated C++
-- **Output Panels**: Separate panels for compiler output and program terminal
-- **File Watching**: Automatic recompilation on file changes
-
-### Running Electroscribe
-
-```bash
-cd ELECTROSCRIBE
-python main.py
+**The Relationship:**
+```
+HEIDIC Code (.hd) → [HEIDIC Compiler] → C++ Code → [C++ Compiler] → Executable
+                                                          ↓
+                                                   Uses EDEN Engine
+                                                   (Runtime Library)
 ```
 
-## Building
+### Electroscribe IDE
+Integrated development environment with:
+- Syntax highlighting for HEIDIC
+- Project management
+- Integrated build pipeline
+- Hot-reload support
+- C++ view (see generated code)
+
+### CONTINUUM
+Hot-reload system that allows you to:
+- Edit systems without restarting (`@hot` systems)
+- Edit shaders, pipelines rebuild automatically
+- Change component structure, data migrates automatically
+
+### NEUROSHELL
+Lightweight in-game UI system (~1000 lines) optimized for performance, perfect for HUDs, menus, and in-game interfaces.
+
+### HEIROC
+Configuration scripting language that transpiles to HEIDIC. Perfect for asset configuration and simple entity behaviors.
+
+### ESE (Echo Synapse Editor)
+3D model editor built with HEIDIC, featuring mesh manipulation, gizmos, and HDM file format support.
+
+## Getting Started
 
 ### Prerequisites
 
 - **Rust** (for the HEIDIC compiler)
-- **Cargo** (Rust package manager)
-- **g++** (C++17 compiler)
+- **C++17 Compiler** (g++, clang++, or MSVC)
 - **Vulkan SDK** (for Vulkan projects)
 - **GLFW** (for windowing)
 - **Python 3.7+** (for Electroscribe IDE)
@@ -113,24 +142,28 @@ python main.py
 cargo build --release
 ```
 
-This creates the HEIDIC compiler executable.
-
-### Compile a HEIDIC File
+### Using Electroscribe IDE
 
 ```bash
-cargo run -- compile examples/hello.hd
+cd ELECTROSCRIBE
+python main.py
 ```
 
-This generates a `hello.cpp` file in the same directory.
+Then:
+1. Click `[N]` to create a new project
+2. Write your HEIDIC code
+3. Click `>` to compile and run
 
-### Compile the Generated C++
+### Command Line Usage
 
 ```bash
+# Compile a HEIDIC file
+cargo run -- compile examples/hello.hd
+
+# This generates hello.cpp, then compile it:
 g++ -std=c++17 -O3 examples/hello.cpp -o hello
 ./hello
 ```
-
-Or use Electroscribe IDE for an integrated build experience.
 
 ## Project Structure
 
@@ -155,50 +188,54 @@ HEIDIC/
 ├── vulkan/                # EDEN Engine runtime
 │   ├── eden_vulkan_helpers.cpp  # Vulkan renderer
 │   └── eden_vulkan_helpers.h
-├── examples/              # Example projects
-│   ├── hello.hd
-│   ├── spinning_cube/
-│   └── ...
-└── DOCS/                  # Documentation
-    └── HEIDIC/            # Language documentation
-```
-
-## Example
-
-```heidic
-fn main(): void {
-    let x: f32 = 10.0;
-    let y = 20.0;  // Type inference
-    
-    print("Hello, HEIDIC!");
-    print(x + y);
-}
+├── NEUROSHELL/            # Lightweight UI system
+├── HEIROC/                # HEIROC transpiler
+└── examples/              # Example projects
 ```
 
 ## Documentation
 
+For complete documentation, see the [HEIDIC Documentation](DOCS/index.md) (when available locally).
+
+Key documentation topics:
 - [Language Specification](DOCS/HEIDIC/LANGUAGE.md)
 - [Language Reference](DOCS/HEIDIC/LANGUAGE_REFERENCE.md)
-- [EDEN Engine vs HEIDIC](DOCS/EDEN_VS_HEIDIC.md)
-- [Electroscribe IDE](ELECTROSCRIBE/README.md)
+- [ECS & Components](DOCS/ECS/ECS_QUERIES_EXPLAINED.md)
+- [CONTINUUM Hot-Reload](DOCS/CONTINUUM-HOT%20RELOAD%20DOCS/HOT_RELOADING_EXPLAINED.md)
+- [Features Showcase](DOCS/FEATURES.md)
+- [Examples](DOCS/EXAMPLES.md)
 
 ## Performance
 
 HEIDIC is designed for high-performance game development:
 
-1. **Zero-cost abstractions**: Compiles to efficient C++ code
-2. **No garbage collection**: Manual memory management
-3. **Arena allocators**: Fast memory allocation for game objects
-4. **ECS support**: Built-in Entity Component System for efficient game object management
-5. **SOA layouts**: Structure-of-Arrays for GPU computing and cache efficiency
+1. **Zero-cost abstractions** - Compiles to efficient C++ code
+2. **No garbage collection** - Manual memory management
+3. **Arena allocators** - Fast frame-scoped memory allocation
+4. **ECS support** - Built-in Entity Component System for efficient game object management
+5. **SOA layouts** - Structure-of-Arrays for GPU computing and cache efficiency
 
 ## Compilation Pipeline
 
 ```
 game.hd → [HEIDIC Compiler] → game.cpp → [C++ Compiler] → game.exe
+                                                              ↓
+                                                       Uses EDEN Engine
+                                                       (Runtime Library)
 ```
 
 This two-stage compilation ensures maximum performance while maintaining a clean, game-focused syntax.
+
+## Example Projects
+
+Try these examples in Electroscribe IDE:
+
+- **Query Iteration**: `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/examples/query_iteration_example.hd`
+- **Pattern Matching**: `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/pattern_matching_test/pattern_matching_test.hd`
+- **Optional Types**: `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/optional_types_test/optional_types_test.hd`
+- **Zero-Boilerplate Pipelines**: `ELECTROSCRIBE/PROJECTS/OLD PROJECTS/pipeline_test/pipeline_test.hd`
+
+See [Examples](DOCS/EXAMPLES.md) for a complete list.
 
 ## License
 

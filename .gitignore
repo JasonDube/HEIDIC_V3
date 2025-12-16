@@ -111,5 +111,10 @@ user_questions.md
 # ELECTROSCRIBE empty template
 ELECTROSCRIBE/empty.hd
 
+# Documentation
+DOCS/
+mkdocs/
+site/
+.mkdocs/
 
 .aider*

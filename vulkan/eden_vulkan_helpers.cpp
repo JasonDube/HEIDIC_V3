@@ -9692,8 +9692,9 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
         
         const QuadEdge& selectedEdge = g_eseQuadEdges[g_eseSelectedEdge];
         
-        // The selected edge defines the NEW LOOP direction
-        // We need to cut all quads perpendicular to this edge, inserting new edges PARALLEL to selected edge
+        // The selected edge will be CUT by the new loop (perpendicular to it)
+        // The new edges will be PERPENDICULAR to the selected edge
+        // We follow through quads that share edges PARALLEL to the selected edge
         
         // Helper to get position key for edge matching
         auto getEdgePosKey = [&vertices](uint32_t va, uint32_t vb) -> std::pair<std::string, std::string> {
@@ -9729,12 +9730,13 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
         std::queue<std::pair<int, int>> toVisit;
         
         // Start with quads that contain the selected edge
+        // The selected edge is a CUT edge - the loop goes perpendicular to it
         if (edgeToQuadInfo.count(selectedEdgeKey)) {
             for (auto& info : edgeToQuadInfo[selectedEdgeKey]) {
                 int qi = info.first;
                 int edgeIdx = info.second;
-                // The selected edge is a "flow" edge (parallel to the new loop)
-                // So we cut the perpendicular edges
+                // The selected edge IS a cut edge
+                // We follow through edges PARALLEL to the selected edge (the other cut edges)
                 toVisit.push(std::make_pair(qi, edgeIdx));
             }
         }
@@ -9743,30 +9745,30 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
             auto front = toVisit.front();
             toVisit.pop();
             int qi = front.first;
-            int flowEdgeIdx = front.second;  // This edge is parallel to the loop
+            int cutEdgeIdx = front.second;  // This edge will be cut (selected edge or parallel to it)
             
             if (visited.count(qi)) continue;
             visited.insert(qi);
             
             auto& q = g_eseReconstructedQuads[qi];
             
-            // Flow edges are at flowEdgeIdx and (flowEdgeIdx + 2) % 4 (opposite)
-            // Cut edges are at (flowEdgeIdx + 1) % 4 and (flowEdgeIdx + 3) % 4
-            int cutEdge1 = (flowEdgeIdx + 1) % 4;
-            int cutEdge2 = (flowEdgeIdx + 3) % 4;
-            int flowEdge1 = flowEdgeIdx;
-            int flowEdge2 = (flowEdgeIdx + 2) % 4;
+            // Cut edges are at cutEdgeIdx and (cutEdgeIdx + 2) % 4 (opposite)
+            // Flow edges are at (cutEdgeIdx + 1) % 4 and (cutEdgeIdx + 3) % 4 (perpendicular)
+            int cutEdge1 = cutEdgeIdx;
+            int cutEdge2 = (cutEdgeIdx + 2) % 4;
+            int flowEdge1 = (cutEdgeIdx + 1) % 4;
+            int flowEdge2 = (cutEdgeIdx + 3) % 4;
             
             quadToCutEdges[qi] = std::make_pair(cutEdge1, cutEdge2);
             
-            // Follow through flow edges to adjacent quads
-            for (int fe : {flowEdge1, flowEdge2}) {
-                uint32_t va = q[fe];
-                uint32_t vb = q[(fe + 1) % 4];
-                auto flowKey = getEdgePosKey(va, vb);
+            // Follow through CUT edges to adjacent quads (edges parallel to selected)
+            for (int ce : {cutEdge1, cutEdge2}) {
+                uint32_t va = q[ce];
+                uint32_t vb = q[(ce + 1) % 4];
+                auto cutKey = getEdgePosKey(va, vb);
                 
-                if (edgeToQuadInfo.count(flowKey)) {
-                    for (auto& info : edgeToQuadInfo[flowKey]) {
+                if (edgeToQuadInfo.count(cutKey)) {
+                    for (auto& info : edgeToQuadInfo[cutKey]) {
                         int adjQi = info.first;
                         int adjEdgeIdx = info.second;
                         if (!visited.count(adjQi)) {
@@ -9847,15 +9849,38 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
                 }
             }
             
-            // Add split quads
+            // First, find the reference normal for each quad from its original triangles
+            std::map<int, glm::vec3> quadToNormal;
+            for (auto& entry : quadToCutEdges) {
+                int qi = entry.first;
+                auto& q = g_eseReconstructedQuads[qi];
+                std::set<uint32_t> quadVerts;
+                quadVerts.insert(q[0]); quadVerts.insert(q[1]); quadVerts.insert(q[2]); quadVerts.insert(q[3]);
+                
+                // Find a triangle from the original mesh that belongs to this quad
+                for (size_t ti = 0; ti < numTris; ti++) {
+                    uint32_t tv0 = indices[ti * 3];
+                    uint32_t tv1 = indices[ti * 3 + 1];
+                    uint32_t tv2 = indices[ti * 3 + 2];
+                    
+                    if (quadVerts.count(tv0) && quadVerts.count(tv1) && quadVerts.count(tv2)) {
+                        // This triangle belongs to the quad - use its normal
+                        glm::vec3 p0(vertices[tv0].pos[0], vertices[tv0].pos[1], vertices[tv0].pos[2]);
+                        glm::vec3 p1(vertices[tv1].pos[0], vertices[tv1].pos[1], vertices[tv1].pos[2]);
+                        glm::vec3 p2(vertices[tv2].pos[0], vertices[tv2].pos[1], vertices[tv2].pos[2]);
+                        quadToNormal[qi] = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+                        break;
+                    }
+                }
+            }
+            
+            // Add split quads - ensuring normals face same direction as original triangles
             for (auto& entry : quadToCutEdges) {
                 int qi = entry.first;
                 auto cutPair = entry.second;
                 auto& q = g_eseReconstructedQuads[qi];
                 int cutEdge1 = cutPair.first;
                 int cutEdge2 = cutPair.second;
-                
-                uint32_t v0 = q[0], v1 = q[1], v2 = q[2], v3 = q[3];
                 
                 auto getMidpoint = [&](int edgeIdx) -> uint32_t {
                     uint32_t va = q[edgeIdx];
@@ -9867,26 +9892,45 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
                 uint32_t mid1 = getMidpoint(cutEdge1);
                 uint32_t mid2 = getMidpoint(cutEdge2);
                 
-                // Split the quad at the midpoints of the cut edges
-                // The cut edges are perpendicular to the loop direction
-                // We create two quads by connecting the midpoints
+                // Get reference normal from original triangle
+                glm::vec3 origNormal = quadToNormal.count(qi) ? quadToNormal[qi] : glm::vec3(0, 1, 0);
                 
-                // Find which vertices are adjacent to which cut edge
-                // cutEdge1 connects q[cutEdge1] to q[(cutEdge1+1)%4]
-                // cutEdge2 connects q[cutEdge2] to q[(cutEdge2+1)%4]
+                // Helper to add a triangle with correct winding
+                auto addTriangle = [&](uint32_t v0, uint32_t v1, uint32_t v2) {
+                    glm::vec3 p0(vertices[v0].pos[0], vertices[v0].pos[1], vertices[v0].pos[2]);
+                    glm::vec3 p1(vertices[v1].pos[0], vertices[v1].pos[1], vertices[v1].pos[2]);
+                    glm::vec3 p2(vertices[v2].pos[0], vertices[v2].pos[1], vertices[v2].pos[2]);
+                    glm::vec3 triNormal = glm::cross(p1 - p0, p2 - p0);
+                    
+                    // Check if normal faces same direction as original
+                    if (glm::dot(triNormal, origNormal) >= 0.0f) {
+                        // Same direction - keep winding
+                        newIndices.push_back(v0);
+                        newIndices.push_back(v1);
+                        newIndices.push_back(v2);
+                    } else {
+                        // Opposite direction - reverse winding
+                        newIndices.push_back(v0);
+                        newIndices.push_back(v2);
+                        newIndices.push_back(v1);
+                    }
+                };
                 
-                uint32_t ce1_v0 = q[cutEdge1];
-                uint32_t ce1_v1 = q[(cutEdge1 + 1) % 4];
-                uint32_t ce2_v0 = q[cutEdge2];
-                uint32_t ce2_v1 = q[(cutEdge2 + 1) % 4];
+                // Quad A: q[cutEdge1], mid1, mid2, q[(cutEdge2+1)%4]
+                uint32_t qa0 = q[cutEdge1];
+                uint32_t qa1 = mid1;
+                uint32_t qa2 = mid2;
+                uint32_t qa3 = q[(cutEdge2 + 1) % 4];
+                addTriangle(qa0, qa1, qa2);
+                addTriangle(qa0, qa2, qa3);
                 
-                // New quad 1: ce1_v0 -> mid1 -> mid2 -> ce2_v1
-                newIndices.push_back(ce1_v0); newIndices.push_back(mid1); newIndices.push_back(ce2_v1);
-                newIndices.push_back(ce2_v1); newIndices.push_back(mid1); newIndices.push_back(mid2);
-                
-                // New quad 2: mid1 -> ce1_v1 -> ce2_v0 -> mid2
-                newIndices.push_back(mid1); newIndices.push_back(ce1_v1); newIndices.push_back(mid2);
-                newIndices.push_back(mid2); newIndices.push_back(ce1_v1); newIndices.push_back(ce2_v0);
+                // Quad B: mid1, q[(cutEdge1+1)%4], q[cutEdge2], mid2
+                uint32_t qb0 = mid1;
+                uint32_t qb1 = q[(cutEdge1 + 1) % 4];
+                uint32_t qb2 = q[cutEdge2];
+                uint32_t qb3 = mid2;
+                addTriangle(qb0, qb1, qb2);
+                addTriangle(qb0, qb2, qb3);
             }
             
             indices = newIndices;
@@ -9896,9 +9940,11 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
             
             g_objMeshResource->rebuildBuffers();
             
-            // Reset and force reconstruction
+            // Reset and force full reconstruction of quads and edges
             g_eseSelectedEdge = -1;
             g_eseSelectedEdges.clear();
+            g_eseReconstructedQuads.clear();
+            g_eseQuadEdges.clear();
             g_eseLastQuadIndexCount = 0;
         }
     }
@@ -10559,33 +10605,66 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
                     glm::vec3 edgeMid = (p0 + p1) * 0.5f;
                     
                     // Backface culling: check if any quad containing this edge is visible
-                    bool anyQuadVisible = false;
-                    for (int qi : qe.quadIndices) {
-                        if (qi >= 0 && qi < (int)g_eseReconstructedQuads.size()) {
-                            const auto& quad = g_eseReconstructedQuads[qi];
-                            glm::vec3 qp0(vertices[quad[0]].pos[0], vertices[quad[0]].pos[1], vertices[quad[0]].pos[2]);
-                            glm::vec3 qp1(vertices[quad[1]].pos[0], vertices[quad[1]].pos[1], vertices[quad[1]].pos[2]);
-                            glm::vec3 qp2(vertices[quad[2]].pos[0], vertices[quad[2]].pos[1], vertices[quad[2]].pos[2]);
-                            glm::vec3 qp3(vertices[quad[3]].pos[0], vertices[quad[3]].pos[1], vertices[quad[3]].pos[2]);
-                            glm::vec3 center = (qp0 + qp1 + qp2 + qp3) * 0.25f;
-                            glm::vec3 normal = glm::normalize(glm::cross(qp1 - qp0, qp2 - qp0));
-                            if (glm::dot(normal, glm::normalize(cameraPos - center)) > 0.0f) {
-                                anyQuadVisible = true;
-                                break;
+                    bool anyVisible = false;
+                    
+                    if (!qe.quadIndices.empty()) {
+                        for (int qi : qe.quadIndices) {
+                            if (qi >= 0 && qi < (int)g_eseReconstructedQuads.size()) {
+                                const auto& quad = g_eseReconstructedQuads[qi];
+                                glm::vec3 qp0(vertices[quad[0]].pos[0], vertices[quad[0]].pos[1], vertices[quad[0]].pos[2]);
+                                glm::vec3 qp1(vertices[quad[1]].pos[0], vertices[quad[1]].pos[1], vertices[quad[1]].pos[2]);
+                                glm::vec3 qp2(vertices[quad[2]].pos[0], vertices[quad[2]].pos[1], vertices[quad[2]].pos[2]);
+                                glm::vec3 qp3(vertices[quad[3]].pos[0], vertices[quad[3]].pos[1], vertices[quad[3]].pos[2]);
+                                glm::vec3 center = (qp0 + qp1 + qp2 + qp3) * 0.25f;
+                                glm::vec3 normal = glm::normalize(glm::cross(qp1 - qp0, qp2 - qp0));
+                                if (glm::dot(normal, glm::normalize(cameraPos - center)) > -0.2f) {
+                                    anyVisible = true;
+                                    break;
+                                }
                             }
+                        }
+                    } else {
+                        // No quad associations - use vertex normals
+                        glm::vec3 avgNormal(
+                            (vertices[qe.v0].normal[0] + vertices[qe.v1].normal[0]) * 0.5f,
+                            (vertices[qe.v0].normal[1] + vertices[qe.v1].normal[1]) * 0.5f,
+                            (vertices[qe.v0].normal[2] + vertices[qe.v1].normal[2]) * 0.5f
+                        );
+                        if (glm::length(avgNormal) > 0.0001f) {
+                            avgNormal = glm::normalize(avgNormal);
+                            glm::vec3 toCamera = glm::normalize(cameraPos - edgeMid);
+                            anyVisible = glm::dot(avgNormal, toCamera) > -0.3f;
+                        } else {
+                            anyVisible = true;
                         }
                     }
                     
-                    if (!anyQuadVisible) continue;
+                    if (!anyVisible) continue;
                     
-                    // Distance from ray to edge midpoint
-                    glm::vec3 toMid = edgeMid - cameraPos;
-                    float t = glm::dot(toMid, rayDir);
-                    if (t > 0) {
-                        glm::vec3 closestPointOnRay = cameraPos + rayDir * t;
-                        float distToRay = glm::length(edgeMid - closestPointOnRay);
+                    // Distance from ray to edge LINE (not just midpoint)
+                    // Find closest point on edge to the ray
+                    glm::vec3 edgeDir = p1 - p0;
+                    float edgeLen = glm::length(edgeDir);
+                    if (edgeLen < 0.0001f) continue;
+                    edgeDir /= edgeLen;
+                    
+                    // Project camera position onto edge direction
+                    glm::vec3 toP0 = p0 - cameraPos;
+                    float tEdge = -glm::dot(glm::cross(toP0, rayDir), glm::cross(edgeDir, rayDir));
+                    float denom = glm::length(glm::cross(edgeDir, rayDir));
+                    if (denom > 0.0001f) tEdge /= (denom * denom);
+                    tEdge = glm::clamp(tEdge, 0.0f, edgeLen);
+                    
+                    glm::vec3 closestOnEdge = p0 + edgeDir * tEdge;
+                    
+                    // Distance from closest point on edge to ray
+                    glm::vec3 toClosest = closestOnEdge - cameraPos;
+                    float tRay = glm::dot(toClosest, rayDir);
+                    if (tRay > 0) {
+                        glm::vec3 closestPointOnRay = cameraPos + rayDir * tRay;
+                        float distToRay = glm::length(closestOnEdge - closestPointOnRay);
                         
-                        float threshold = 0.08f * (t / g_eseCameraDistance);
+                        float threshold = 0.12f * (tRay / g_eseCameraDistance);
                         if (distToRay < threshold && distToRay < closestDist) {
                             closestDist = distToRay;
                             closestEdge = (int)ei;
@@ -11439,26 +11518,10 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
         }
         ImGui::End();
         
-        // Draw QUAD edges only (not triangle diagonals)
+        // Draw edges directly from g_eseQuadEdges (which correctly tracks quad edges)
         if (g_objMeshResource && !g_eseQuadEdges.empty()) {
             ImDrawList* drawList = ImGui::GetForegroundDrawList();
             const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
-            
-            // Calculate camera position for backface culling
-            float yawRad = g_eseCameraYaw * 3.14159f / 180.0f;
-            float pitchRad = g_eseCameraPitch * 3.14159f / 180.0f;
-            if (pitchRad > 1.5f) pitchRad = 1.5f;
-            if (pitchRad < -1.5f) pitchRad = -1.5f;
-            
-            float camX = g_eseCameraDistance * cosf(pitchRad) * sinf(yawRad);
-            float camY = g_eseCameraDistance * sinf(pitchRad);
-            float camZ = g_eseCameraDistance * cosf(pitchRad) * cosf(yawRad);
-            
-            glm::vec3 cameraPos(
-                camX + g_eseCameraTargetX + g_eseCameraPanX,
-                camY + g_eseCameraTargetY + g_eseCameraPanY,
-                camZ + g_eseCameraTargetZ
-            );
             
             for (size_t ei = 0; ei < g_eseQuadEdges.size(); ei++) {
                 const QuadEdge& qe = g_eseQuadEdges[ei];
@@ -11467,27 +11530,6 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
                 
                 glm::vec3 p0(vertices[qe.v0].pos[0], vertices[qe.v0].pos[1], vertices[qe.v0].pos[2]);
                 glm::vec3 p1(vertices[qe.v1].pos[0], vertices[qe.v1].pos[1], vertices[qe.v1].pos[2]);
-                glm::vec3 edgeMid = (p0 + p1) * 0.5f;
-                
-                // Backface culling: check if any quad containing this edge is visible
-                bool anyQuadVisible = false;
-                for (int qi : qe.quadIndices) {
-                    if (qi >= 0 && qi < (int)g_eseReconstructedQuads.size()) {
-                        const auto& quad = g_eseReconstructedQuads[qi];
-                        glm::vec3 qp0(vertices[quad[0]].pos[0], vertices[quad[0]].pos[1], vertices[quad[0]].pos[2]);
-                        glm::vec3 qp1(vertices[quad[1]].pos[0], vertices[quad[1]].pos[1], vertices[quad[1]].pos[2]);
-                        glm::vec3 qp2(vertices[quad[2]].pos[0], vertices[quad[2]].pos[1], vertices[quad[2]].pos[2]);
-                        glm::vec3 qp3(vertices[quad[3]].pos[0], vertices[quad[3]].pos[1], vertices[quad[3]].pos[2]);
-                        glm::vec3 center = (qp0 + qp1 + qp2 + qp3) * 0.25f;
-                        glm::vec3 normal = glm::normalize(glm::cross(qp1 - qp0, qp2 - qp0));
-                        if (glm::dot(normal, glm::normalize(cameraPos - center)) > 0.0f) {
-                            anyQuadVisible = true;
-                            break;
-                        }
-                    }
-                }
-                
-                if (!anyQuadVisible) continue;
                 
                 bool inFront0, inFront1;
                 glm::vec2 screenStart = ese_project_to_screen(p0, &inFront0);
@@ -11495,9 +11537,10 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
                 
                 if (inFront0 && inFront1) {
                     bool isSelected = g_eseSelectedEdges.count((int)ei) > 0;
+                    
                     ImU32 color = isSelected ? 
-                        IM_COL32(255, 100, 50, 255) : IM_COL32(255, 180, 100, 120);
-                    float thickness = isSelected ? 3.0f : 1.5f;
+                        IM_COL32(255, 100, 50, 255) : IM_COL32(255, 200, 120, 180);
+                    float thickness = isSelected ? 4.0f : 2.0f;
                     
                     drawList->AddLine(
                         ImVec2(screenStart.x, screenStart.y),
@@ -11681,8 +11724,8 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
         const std::vector<MeshVertex>& vertices = g_objMeshResource->getVertices();
         const std::vector<uint32_t>& indices = g_objMeshResource->getIndices();
         
-        // Rebuild quads if needed (only when model changes, but not during extrusion)
-        bool shouldRebuildQuads = (indices.size() != g_eseLastQuadIndexCount) && !g_eseExtrudeExecuted;
+        // Rebuild quads if needed (only when model changes)
+        bool shouldRebuildQuads = (indices.size() != g_eseLastQuadIndexCount) || g_eseReconstructedQuads.empty();
         if (shouldRebuildQuads) {
             g_eseReconstructedQuads.clear();
             g_eseLastQuadIndexCount = indices.size();
@@ -11722,7 +11765,7 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
                         glm::vec3 u2(vertices[c2].pos[0], vertices[c2].pos[1], vertices[c2].pos[2]);
                         glm::vec3 n2 = glm::normalize(glm::cross(u1 - u0, u2 - u0));
                         
-                        if (glm::dot(n1, n2) > 0.99f) {
+                        if (glm::dot(n1, n2) > 0.95f) {  // Relaxed threshold for better quad detection
                             // Coplanar - form a quad
                             uint32_t unshared1 = 0, unshared2 = 0;
                             for (uint32_t v : verts1) if (!verts2.count(v)) unshared1 = v;
@@ -11737,16 +11780,19 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
                 }
             }
             
-            // Build quad edges (perimeter edges only, no diagonals)
+            // Build quad edges DIRECTLY from reconstructed quads
+            // Each quad has 4 perimeter edges: (0-1), (1-2), (2-3), (3-0)
             g_eseQuadEdges.clear();
+            
             std::map<std::pair<uint32_t, uint32_t>, int> edgeToQuadEdgeIndex;
             
             for (int qi = 0; qi < (int)g_eseReconstructedQuads.size(); qi++) {
-                const auto& quad = g_eseReconstructedQuads[qi];
-                // Quad edges: 0->1, 1->2, 2->3, 3->0
-                for (int ei = 0; ei < 4; ei++) {
-                    uint32_t va = quad[ei];
-                    uint32_t vb = quad[(ei + 1) % 4];
+                const auto& q = g_eseReconstructedQuads[qi];
+                
+                // Add all 4 perimeter edges of this quad
+                for (int e = 0; e < 4; e++) {
+                    uint32_t va = q[e];
+                    uint32_t vb = q[(e + 1) % 4];
                     auto key = std::make_pair(std::min(va, vb), std::max(va, vb));
                     
                     if (edgeToQuadEdgeIndex.count(key) == 0) {
@@ -11755,17 +11801,17 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
                         qe.v0 = va;
                         qe.v1 = vb;
                         qe.quadIndices.push_back(qi);
-                        qe.edgeInQuad = ei;
+                        qe.edgeInQuad = e;
                         edgeToQuadEdgeIndex[key] = (int)g_eseQuadEdges.size();
                         g_eseQuadEdges.push_back(qe);
                     } else {
-                        // Existing edge - add this quad to its list
+                        // Edge already exists, add this quad to it
                         g_eseQuadEdges[edgeToQuadEdgeIndex[key]].quadIndices.push_back(qi);
                     }
                 }
             }
             
-            std::cout << "[ESE] Built " << g_eseQuadEdges.size() << " quad edges from " 
+            std::cout << "[ESE] Built " << g_eseQuadEdges.size() << " edges from " 
                       << g_eseReconstructedQuads.size() << " quads" << std::endl;
         }
         
@@ -11797,7 +11843,8 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
             glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
             glm::vec3 toCamera = glm::normalize(cameraPos - center);
             
-            if (glm::dot(normal, toCamera) <= 0.0f) continue;  // Backface cull
+            // NO backface culling for quads - show all of them
+            // if (glm::dot(normal, toCamera) <= 0.0f) continue;  // Backface cull
             
             bool inFront0, inFront1, inFront2, inFront3;
             glm::vec2 s0 = ese_project_to_screen(p0, &inFront0);
@@ -11807,7 +11854,19 @@ extern "C" void heidic_render_ese(GLFWwindow* window) {
             
             if (inFront0 && inFront1 && inFront2 && inFront3) {
                 bool isSelected = g_eseSelectedQuads.count((int)qi) > 0;
-                ImU32 color = isSelected ? IM_COL32(255, 200, 50, 255) : IM_COL32(200, 180, 100, 150);
+                
+                // Check if normal faces camera
+                bool facingCamera = glm::dot(normal, toCamera) > 0.0f;
+                
+                // Different color for front/back facing
+                ImU32 color;
+                if (isSelected) {
+                    color = IM_COL32(255, 200, 50, 255);
+                } else if (facingCamera) {
+                    color = IM_COL32(200, 180, 100, 180);
+                } else {
+                    color = IM_COL32(100, 80, 50, 100);  // Dimmer for back-facing
+                }
                 float thickness = isSelected ? 3.0f : 1.5f;
                 
                 // Draw quad outline (4 edges)
