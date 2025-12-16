@@ -1,7 +1,7 @@
 site_name: HEIDIC Documentation
 site_description: Complete documentation for the HEIDIC programming language and EDEN Engine ecosystem
 site_author: HEIDIC Project
-site_url: https://heidic.dev
+site_url: https://jasondube.github.io/HEIDIC/
 
 # Documentation directory - point to public-docs folder (relative to config file location)
 docs_dir: ../public-docs
@@ -10,8 +10,8 @@ docs_dir: ../public-docs
 site_dir: ../site
 
 repo_name: HEIDIC
-repo_url: https://github.com/yourusername/heidic
-edit_uri: edit/main/DOCS/
+repo_url: https://github.com/JasonDube/HEIDIC
+edit_uri: edit/main/public-docs/
 
 # Copyright
 copyright: Copyright &copy; 2024 HEIDIC Project
@@ -137,5 +137,5 @@ extra:
     provider: mike
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/yourusername/heidic
+      link: https://github.com/JasonDube/HEIDIC
 

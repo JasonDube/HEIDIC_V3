@@ -182,3 +182,5 @@ We welcome contributions! Please see our development documentation for implement
 ---
 
 **HEIDIC** - Building game engines, one abstraction at a time.
+
+[![GitHub](https://img.shields.io/badge/GitHub-View%20Source-blue?logo=github)](https://github.com/JasonDube/HEIDIC)

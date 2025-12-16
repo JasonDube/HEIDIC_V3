@@ -1,0 +1,47 @@
+/* Custom styles for HEIDIC documentation */
+
+/* Code block styling for HEIDIC */
+.highlight .language-heidic {
+    color: #e1e4e8;
+}
+
+/* Custom admonition styles */
+.md-typeset .admonition.heidic {
+    border-color: #6366f1;
+}
+
+.md-typeset .admonition.heidic > .admonition-title {
+    background-color: rgba(99, 102, 241, 0.1);
+    border-color: #6366f1;
+}
+
+.md-typeset .admonition.heidic > .admonition-title::before {
+    background-color: #6366f1;
+    -webkit-mask-image: var(--md-admonition-icon--heidic);
+    mask-image: var(--md-admonition-icon--heidic);
+}
+
+/* Improve code block readability */
+.md-typeset pre > code {
+    font-size: 0.85rem;
+}
+
+/* Custom link colors */
+.md-typeset a {
+    color: #6366f1;
+}
+
+.md-typeset a:hover {
+    color: #818cf8;
+}
+
+/* Table improvements */
+.md-typeset table:not([class]) {
+    border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.md-typeset table:not([class]) th {
+    background-color: rgba(99, 102, 241, 0.1);
+    font-weight: 600;
+}
+

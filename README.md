@@ -1,5 +1,8 @@
 # HEIDIC
 
+[![Documentation](https://img.shields.io/badge/Documentation-Online-blue)](https://jasondube.github.io/HEIDIC/)
+[![GitHub](https://img.shields.io/badge/GitHub-View%20Source-blue?logo=github)](https://github.com/JasonDube/HEIDIC)
+
 **HEIDIC** is a statically-typed, compiled programming language designed specifically for building high-performance game engines and game logic. It compiles to native C++17 code, providing zero-cost abstractions while maintaining a clean, game-focused syntax.
 
 ## What is HEIDIC?
@@ -195,16 +198,14 @@ HEIDIC/
 
 ## Documentation
 
-📚 **Full Documentation:** [https://yourusername.github.io/heidic/](https://yourusername.github.io/heidic/)
+📚 **Full Documentation:** [https://jasondube.github.io/HEIDIC/](https://jasondube.github.io/HEIDIC/)
 
 The complete HEIDIC documentation is available online, including:
-- [Features Showcase](https://yourusername.github.io/heidic/FEATURES/)
-- [Examples](https://yourusername.github.io/heidic/EXAMPLES/)
-- [Language Reference](https://yourusername.github.io/heidic/HEIDIC/LANGUAGE_REFERENCE/)
-- [ECS & Components](https://yourusername.github.io/heidic/ECS/ECS_QUERIES_EXPLAINED/)
-- [CONTINUUM Hot-Reload](https://yourusername.github.io/heidic/CONTINUUM-HOT%20RELOAD%20DOCS/HOT_RELOADING_EXPLAINED/)
-
-> **Note:** Replace `yourusername` with your actual GitHub username in the URLs above.
+- [Features Showcase](https://jasondube.github.io/HEIDIC/FEATURES/)
+- [Examples](https://jasondube.github.io/HEIDIC/EXAMPLES/)
+- [Language Reference](https://jasondube.github.io/HEIDIC/HEIDIC/LANGUAGE_REFERENCE/)
+- [ECS & Components](https://jasondube.github.io/HEIDIC/ECS/ECS_QUERIES_EXPLAINED/)
+- [CONTINUUM Hot-Reload](https://jasondube.github.io/HEIDIC/CONTINUUM-HOT%20RELOAD%20DOCS/HOT_RELOADING_EXPLAINED/)
 
 ## Performance
 
