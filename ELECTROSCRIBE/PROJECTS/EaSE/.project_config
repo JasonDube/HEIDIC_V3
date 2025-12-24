@@ -1,0 +1,8 @@
+# EaSE - Model Viewer (OBJ, GLB) with Facial Animation
+# Uses VulkanCore backend with Lighting and Facial Animation Modules
+
+use_modular_engine=true
+engine_sources=engine/ease_engine.cpp,engine/ease_api.cpp,../../../vulkan/core/vulkan_core.cpp,../../../vulkan/lighting/lighting_manager.cpp,../../../vulkan/facial/facial_system.cpp,../../../vulkan/facial/facial_painter.cpp,../../../vulkan/platform/file_dialog.cpp,../../../vulkan/utils/glb_loader.cpp,../../../vulkan/utils/raycast.cpp
+enable_neuroshell=false
+enable_imgui=true
+

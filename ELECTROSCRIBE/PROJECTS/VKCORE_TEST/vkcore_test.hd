@@ -1,0 +1,12 @@
+// Minimal VulkanCore test
+extern fn vkcore_test_run(): i32;
+
+fn main(): void {
+    print("VulkanCore Test\n");
+    let result: i32 = vkcore_test_run();
+    if result == 1 {
+        print("PASSED\n");
+    } else {
+        print("FAILED\n");
+    }
+}

@@ -103,7 +103,8 @@ nav:
       - Component Hot-Load: CONTINUUM-HOT RELOAD DOCS/component_hotload_explained.md
       - Implementation Status: CONTINUUM-HOT RELOAD DOCS/HOT_RELOAD_IMPLEMENTATION_STATUS.md
       - Testing: CONTINUUM-HOT RELOAD DOCS/HOT_RELOAD_TESTING.md
-  - Tools:
+  - Tools & Ecosystem:
+    - Overview: TOOLS/index.md
     - EDEN Engine: TOOLS/EDEN_ENGINE.md
     - Electroscribe: TOOLS/ELECTROSCRIBE.md
     - ESE: TOOLS/ESE.md

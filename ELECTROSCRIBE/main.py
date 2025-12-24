@@ -1840,24 +1840,65 @@ class Editor:
         Compiles ALL .vert, .frag, .comp, .geom shaders in the project's shaders/ folder,
         not just @hot shaders. This ensures standard shaders (like quad.vert/frag) are
         automatically compiled.
+        
+        Also compiles shaders from vulkan modules (lighting, facial) when use_modular_engine=true.
         """
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.abspath(os.path.join(script_dir, ".."))
+        
         # Find all shaders in the project (both @hot and standard shaders)
         project_shaders_dir = os.path.join(project_dir, "shaders")
-        shaders_to_compile = []
+        shaders_to_compile = []  # List of (source_path, output_path) tuples
         
         # Add @hot shaders from HEIDIC code
         hot_shaders = self.find_hot_shaders()
         for shader_path in hot_shaders:
-            if shader_path not in shaders_to_compile:
-                shaders_to_compile.append(shader_path)
+            # Output in same directory as source
+            shaders_to_compile.append((shader_path, None))
         
         # Also compile all standard shader files in shaders/ folder
         if os.path.exists(project_shaders_dir):
             for file in os.listdir(project_shaders_dir):
                 if file.endswith(('.vert', '.frag', '.comp', '.geom', '.glsl')):
                     shader_path = os.path.join(project_shaders_dir, file)
-                    if shader_path not in shaders_to_compile:
-                        shaders_to_compile.append(shader_path)
+                    if shader_path not in [s[0] for s in shaders_to_compile]:
+                        shaders_to_compile.append((shader_path, None))
+        
+        # Check for modular engine and add vulkan module shaders
+        config_path = os.path.join(project_dir, ".project_config")
+        use_modular_engine = False
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("use_modular_engine="):
+                            value = line.split("=", 1)[1].strip().lower()
+                            use_modular_engine = value in ("true", "1", "yes")
+                            break
+            except:
+                pass
+        
+        # If using modular engine, find shaders from vulkan modules
+        if use_modular_engine:
+            vulkan_shader_dirs = [
+                os.path.join(project_root, "vulkan", "lighting", "shaders"),
+                os.path.join(project_root, "vulkan", "facial", "shaders"),
+            ]
+            
+            for vulkan_shader_dir in vulkan_shader_dirs:
+                if os.path.exists(vulkan_shader_dir):
+                    for file in os.listdir(vulkan_shader_dir):
+                        if file.endswith(('.vert', '.frag', '.comp', '.geom', '.glsl')):
+                            shader_path = os.path.join(vulkan_shader_dir, file)
+                            # Output .spv to project's shaders/ folder so runtime can find it
+                            output_path = os.path.join(project_shaders_dir, file + '.spv') if not file.endswith('.glsl') else os.path.join(project_shaders_dir, file[:-5] + '.spv')
+                            
+                            # Check if already in list (avoid duplicates)
+                            if shader_path not in [s[0] for s in shaders_to_compile]:
+                                shaders_to_compile.append((shader_path, output_path))
+                                # Ensure project shaders directory exists
+                                os.makedirs(project_shaders_dir, exist_ok=True)
         
         if not shaders_to_compile:
             return True, 0.0  # No shaders to compile, return 0 time
@@ -1889,9 +1930,14 @@ class Editor:
         compiled_count = 0
         failed_count = 0
         
-        for glsl_path in shaders_to_compile:
-            # Determine output path (.spv) - keep extension to avoid conflicts
-            if glsl_path.endswith('.glsl'):
+        for shader_entry in shaders_to_compile:
+            # Unpack tuple (source_path, output_path) - output_path may be None
+            glsl_path, custom_output = shader_entry
+            
+            # Determine output path (.spv) - use custom output if provided
+            if custom_output:
+                spv_path = custom_output
+            elif glsl_path.endswith('.glsl'):
                 spv_path = glsl_path[:-5] + '.spv'
             elif glsl_path.endswith('.vert'):
                 spv_path = glsl_path + '.spv'  # my_shader.vert.spv
@@ -1919,7 +1965,13 @@ class Editor:
                 compile_cmd.append(stage_flag)
             compile_cmd.extend([glsl_path, "-o", spv_path])
             
-            rel_path = os.path.relpath(glsl_path, project_dir)
+            # Show relative path for better readability
+            try:
+                rel_path = os.path.relpath(glsl_path, project_dir)
+            except ValueError:
+                # Different drive on Windows
+                rel_path = glsl_path
+            
             result = self._run_step(f"Shader({os.path.basename(glsl_path)})", compile_cmd)
             if result:
                 compiled_count += 1
@@ -2051,6 +2103,8 @@ class Editor:
         config_path = os.path.join(project_dir, ".project_config")
         neuroshell_enabled = False
         imgui_glfw_enabled = False  # ImGui with GLFW/Vulkan (for ESE-style editors)
+        use_modular_engine = False  # Use project-specific engine instead of eden_vulkan_helpers
+        modular_engine_sources = []  # Custom source files for modular engine
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r") as f:
@@ -2065,6 +2119,13 @@ class Editor:
                         elif line.startswith("enable_imgui="):
                             value = line.split("=", 1)[1].strip().lower()
                             imgui_glfw_enabled = value in ("true", "1", "yes")
+                        elif line.startswith("use_modular_engine="):
+                            value = line.split("=", 1)[1].strip().lower()
+                            use_modular_engine = value in ("true", "1", "yes")
+                        elif line.startswith("engine_sources="):
+                            # Comma-separated list of source files relative to project dir
+                            value = line.split("=", 1)[1].strip()
+                            modular_engine_sources = [s.strip() for s in value.split(",") if s.strip()]
             except Exception as e:
                 self.log_lines.append(f"WARNING: Could not read project config: {e}")
         
@@ -2101,6 +2162,7 @@ class Editor:
         
         # Add include paths
         build_cmd.extend(["-I", project_root])  # For stdlib/vulkan.h
+        build_cmd.extend(["-I", project_dir])  # For project-specific includes (e.g., engine/)
         
         # Add Vulkan SDK include if available
         vulkan_sdk = os.environ.get("VULKAN_SDK")
@@ -2128,20 +2190,44 @@ class Editor:
         
         # Check if we have audio resources (need SDL3 for audio) - check early for include paths
         has_audio_resources = False
+        has_video_resources = False
         if os.path.exists(cpp_path):
             try:
                 with open(cpp_path, 'r', encoding='utf-8') as f:
                     cpp_content = f.read()
                     if 'audio_resource.h' in cpp_content or 'AudioResource' in cpp_content:
                         has_audio_resources = True
+                    if 'video_resource.h' in cpp_content or 'VideoResource' in cpp_content:
+                        has_video_resources = True
             except:
                 pass
         
-        # Add SDL3/SDL2 include path if UI windows are enabled OR if we have audio resources (prefer SDL3)
+        # Add FFmpeg include path if we have video resources
+        ffmpeg_path = None
+        if has_video_resources:
+            ffmpeg_path = os.environ.get("FFMPEG_PATH")
+            if not ffmpeg_path:
+                # Try common FFmpeg locations
+                for path in ["C:\\ffmpeg", "C:\\Program Files\\ffmpeg", "C:\\ffmpeg-7.0", "C:\\ffmpeg-6.0"]:
+                    if os.path.exists(path) and os.path.exists(os.path.join(path, "include", "libavcodec")):
+                        ffmpeg_path = path
+                        break
+            
+            if ffmpeg_path:
+                ffmpeg_include = os.path.join(ffmpeg_path, "include")
+                if os.path.exists(ffmpeg_include):
+                    build_cmd.extend(["-I", ffmpeg_include])
+                    self.log_lines.append(f"Using FFmpeg include: {ffmpeg_include} (required for video)")
+                else:
+                    self.log_lines.append(f"WARNING: FFmpeg include not found at {ffmpeg_include}")
+            else:
+                self.log_lines.append("WARNING: FFmpeg not found - video playback will not work. Set FFMPEG_PATH environment variable.")
+        
+        # Add SDL3/SDL2 include path if UI windows are enabled OR if we have audio/video resources (prefer SDL3)
         sdl3_path = None
         sdl2_path = None
         use_sdl3 = False
-        if ui_windows_enabled or has_audio_resources:
+        if ui_windows_enabled or has_audio_resources or has_video_resources:
             # Try SDL3 first
             sdl3_path = os.environ.get("SDL3_PATH")
             if not sdl3_path:
@@ -2211,7 +2297,34 @@ class Editor:
         
         # Add source files
         build_cmd.append(cpp_path)
-        if os.path.exists(vulkan_helpers_path):
+        
+        # Use modular engine or legacy eden_vulkan_helpers
+        if use_modular_engine and modular_engine_sources:
+            self.log_lines.append("Using modular engine (skipping eden_vulkan_helpers.cpp)")
+            for src in modular_engine_sources:
+                src_path = os.path.join(project_dir, src)
+                if os.path.exists(src_path):
+                    build_cmd.append(src_path)
+                    self.log_lines.append(f"  Added: {src}")
+                else:
+                    self.log_lines.append(f"WARNING: Engine source not found: {src_path}")
+            # Also add raycast.cpp from extracted modules if needed (only if not already in build_cmd)
+            raycast_path = os.path.join(project_root, "vulkan", "utils", "raycast.cpp")
+            if os.path.exists(raycast_path):
+                # Normalize the raycast path
+                raycast_path_abs = os.path.normpath(os.path.abspath(raycast_path))
+                # Check if any path in build_cmd resolves to the same file
+                already_added = False
+                for p in build_cmd:
+                    if isinstance(p, str) and p.endswith('.cpp'):
+                        p_abs = os.path.normpath(os.path.abspath(p))
+                        if p_abs == raycast_path_abs:
+                            already_added = True
+                            break
+                if not already_added:
+                    build_cmd.append(raycast_path)
+                    self.log_lines.append(f"  Added: vulkan/utils/raycast.cpp")
+        elif os.path.exists(vulkan_helpers_path):
             build_cmd.append(vulkan_helpers_path)
         else:
             self.log_lines.append(f"WARNING: Vulkan helpers not found at {vulkan_helpers_path}")
@@ -2280,25 +2393,25 @@ class Editor:
             build_cmd.append("-DUSE_IMGUI")
             self.log_lines.append("ImGui (GLFW/Vulkan) enabled - added USE_IMGUI flag")
         
-        # has_audio_resources was already checked above for include paths
+        # has_audio_resources and has_video_resources were already checked above for include paths
         
-        # Copy SDL3.dll to project directory if UI windows are enabled OR if we have audio resources
-        if (ui_windows_enabled or has_audio_resources) and use_sdl3 and sdl3_path:
+        # Copy SDL3.dll to project directory if UI windows are enabled OR if we have audio/video resources
+        if (ui_windows_enabled or has_audio_resources or has_video_resources) and use_sdl3 and sdl3_path:
             sdl3_dll_path = os.path.join(sdl3_path, "bin", "x64", "SDL3.dll")
             if os.path.exists(sdl3_dll_path):
                 project_dll_path = os.path.join(project_dir, "SDL3.dll")
                 try:
                     import shutil
                     shutil.copy2(sdl3_dll_path, project_dll_path)
-                    if has_audio_resources:
-                        self.log_lines.append(f"Copied SDL3.dll to project directory (required for audio)")
+                    if has_audio_resources or has_video_resources:
+                        self.log_lines.append(f"Copied SDL3.dll to project directory (required for audio/video)")
                     else:
                         self.log_lines.append(f"Copied SDL3.dll to project directory")
                 except Exception as e:
                     self.log_lines.append(f"WARNING: Could not copy SDL3.dll: {e}")
             else:
-                if has_audio_resources:
-                    self.log_lines.append(f"WARNING: SDL3.dll not found at {sdl3_dll_path} - audio playback may not work")
+                if has_audio_resources or has_video_resources:
+                    self.log_lines.append(f"WARNING: SDL3.dll not found at {sdl3_dll_path} - audio/video playback may not work")
         
         # Add output - build to project directory
         exe_name = os.path.splitext(os.path.basename(hd_path))[0] + ".exe"
@@ -2328,11 +2441,11 @@ class Editor:
                     break
         
         # Add libraries to link
-        build_cmd.extend(["-lvulkan-1", "-lglfw3", "-lgdi32", "-lcomdlg32"])
+        build_cmd.extend(["-lvulkan-1", "-lglfw3", "-lgdi32", "-lcomdlg32", "-lole32"])
         
-        # Add SDL3/SDL2 library path and linking if UI windows are enabled OR if we have audio resources
+        # Add SDL3/SDL2 library path and linking if UI windows are enabled OR if we have audio/video resources
         # (has_audio_resources was already checked above for DLL copy)
-        if ui_windows_enabled or has_audio_resources:
+        if ui_windows_enabled or has_audio_resources or has_video_resources:
             if use_sdl3 and sdl3_path:
                 # Try common SDL3 library locations
                 for lib_path in [
@@ -2363,6 +2476,23 @@ class Editor:
                 # Link SDL2
                 build_cmd.append("-lSDL2")
                 build_cmd.append("-lSDL2main")
+        
+        # Add FFmpeg library path and linking if we have video resources
+        if has_video_resources and ffmpeg_path:
+            # Try common FFmpeg library locations
+            for lib_path in [
+                os.path.join(ffmpeg_path, "lib"),
+                os.path.join(ffmpeg_path, "lib", "x64"),
+                os.path.join(ffmpeg_path, "bin"),
+            ]:
+                if os.path.exists(lib_path):
+                    build_cmd.extend(["-L", lib_path])
+                    self.log_lines.append(f"Using FFmpeg library path: {lib_path}")
+                    break
+            
+            # Link FFmpeg libraries (avformat, avcodec, swscale, swresample, avutil)
+            build_cmd.extend(["-lavformat", "-lavcodec", "-lswscale", "-lswresample", "-lavutil"])
+            self.log_lines.append("Linking FFmpeg libraries for video playback")
         
         # Add compile flags for UI windows
         if ui_windows_enabled:

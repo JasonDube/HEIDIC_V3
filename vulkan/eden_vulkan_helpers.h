@@ -1,4 +1,22 @@
 // EDEN ENGINE Vulkan Helper Functions Header
+//
+// =============================================================================
+// MODULAR ARCHITECTURE (December 2024)
+// =============================================================================
+// This header maintains backward compatibility with existing C/HEIDIC code.
+// For new C++ development, prefer using the extracted modules directly:
+//
+//   #include "vulkan/utils/raycast.h"         // Ray intersection
+//   #include "vulkan/platform/file_dialog.h"  // Native dialogs
+//   #include "vulkan/formats/hdm_format.h"    // HDM file format
+//   #include "vulkan/eden_imgui.h"            // ImGui integration
+//   #include "vulkan/renderers/mesh_renderer.h"  // OBJ mesh rendering
+//
+// ESE editor modules (for 3D mesh editing):
+//   #include "ELECTROSCRIBE/PROJECTS/ESE/src/ese_editor.h"
+//
+// See vulkan/REFACTORING_STATUS.md for full documentation.
+// =============================================================================
 
 #ifndef EDEN_VULKAN_HELPERS_H
 #define EDEN_VULKAN_HELPERS_H

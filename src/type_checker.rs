@@ -199,6 +199,121 @@ impl TypeChecker {
                         };
                         self.functions.insert(stop_func_name, stop_func);
                     }
+                    
+                    // Register helper functions for video resources
+                    if res.resource_type == "Video" {
+                        let name_lower = res.name.to_lowercase();
+                        
+                        // play_video_NAME(loop: i32) -> i32
+                        let play_func = FunctionDef {
+                            name: format!("play_video_{}", name_lower),
+                            params: vec![Param { name: "loop".to_string(), ty: Type::I32 }],
+                            return_type: Type::I32,
+                            body: Vec::new(),
+                            cuda_kernel: None,
+                        };
+                        self.functions.insert(play_func.name.clone(), play_func);
+                        
+                        // pause_video_NAME() -> void
+                        let pause_func = FunctionDef {
+                            name: format!("pause_video_{}", name_lower),
+                            params: Vec::new(),
+                            return_type: Type::Void,
+                            body: Vec::new(),
+                            cuda_kernel: None,
+                        };
+                        self.functions.insert(pause_func.name.clone(), pause_func);
+                        
+                        // stop_video_NAME() -> void
+                        let stop_func = FunctionDef {
+                            name: format!("stop_video_{}", name_lower),
+                            params: Vec::new(),
+                            return_type: Type::Void,
+                            body: Vec::new(),
+                            cuda_kernel: None,
+                        };
+                        self.functions.insert(stop_func.name.clone(), stop_func);
+                        
+                        // seek_video_NAME(seconds: f64) -> void
+                        let seek_func = FunctionDef {
+                            name: format!("seek_video_{}", name_lower),
+                            params: vec![Param { name: "seconds".to_string(), ty: Type::F64 }],
+                            return_type: Type::Void,
+                            body: Vec::new(),
+                            cuda_kernel: None,
+                        };
+                        self.functions.insert(seek_func.name.clone(), seek_func);
+                        
+                        // update_video_NAME() -> i32 (returns 1 if new frame)
+                        let update_func = FunctionDef {
+                            name: format!("update_video_{}", name_lower),
+                            params: Vec::new(),
+                            return_type: Type::I32,
+                            body: Vec::new(),
+                            cuda_kernel: None,
+                        };
+                        self.functions.insert(update_func.name.clone(), update_func);
+                        
+                        // get_video_frame_NAME() -> i32 (opaque pointer as i32)
+                        let get_frame_func = FunctionDef {
+                            name: format!("get_video_frame_{}", name_lower),
+                            params: Vec::new(),
+                            return_type: Type::I32,
+                            body: Vec::new(),
+                            cuda_kernel: None,
+                        };
+                        self.functions.insert(get_frame_func.name.clone(), get_frame_func);
+                        
+                        // get_video_width_NAME() -> i32
+                        let get_width_func = FunctionDef {
+                            name: format!("get_video_width_{}", name_lower),
+                            params: Vec::new(),
+                            return_type: Type::I32,
+                            body: Vec::new(),
+                            cuda_kernel: None,
+                        };
+                        self.functions.insert(get_width_func.name.clone(), get_width_func);
+                        
+                        // get_video_height_NAME() -> i32
+                        let get_height_func = FunctionDef {
+                            name: format!("get_video_height_{}", name_lower),
+                            params: Vec::new(),
+                            return_type: Type::I32,
+                            body: Vec::new(),
+                            cuda_kernel: None,
+                        };
+                        self.functions.insert(get_height_func.name.clone(), get_height_func);
+                        
+                        // get_video_duration_NAME() -> f64
+                        let get_duration_func = FunctionDef {
+                            name: format!("get_video_duration_{}", name_lower),
+                            params: Vec::new(),
+                            return_type: Type::F64,
+                            body: Vec::new(),
+                            cuda_kernel: None,
+                        };
+                        self.functions.insert(get_duration_func.name.clone(), get_duration_func);
+                        
+                        // get_video_current_time_NAME() -> f64
+                        let get_time_func = FunctionDef {
+                            name: format!("get_video_current_time_{}", name_lower),
+                            params: Vec::new(),
+                            return_type: Type::F64,
+                            body: Vec::new(),
+                            cuda_kernel: None,
+                        };
+                        self.functions.insert(get_time_func.name.clone(), get_time_func);
+                        
+                        // is_video_playing_NAME() -> i32
+                        let is_playing_func = FunctionDef {
+                            name: format!("is_video_playing_{}", name_lower),
+                            params: Vec::new(),
+                            return_type: Type::I32,
+                            body: Vec::new(),
+                            cuda_kernel: None,
+                        };
+                        self.functions.insert(is_playing_func.name.clone(), is_playing_func);
+                    }
                 }
                 Item::Pipeline(_) => {
                     // Pipelines don't need type checking - they're just declarations

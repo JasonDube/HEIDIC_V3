@@ -1,7 +1,33 @@
 // EDEN ENGINE Vulkan Helper Functions Implementation
-// Simplified implementation for spinning triangle
+// 
+// =============================================================================
+// REFACTORING NOTE (December 2024)
+// =============================================================================
+// This file has been partially refactored. The following modules have been
+// extracted into separate, reusable components:
+//
+// 1. Raycast utilities      -> vulkan/utils/raycast.h/.cpp
+// 2. File dialogs           -> vulkan/platform/file_dialog.h/.cpp
+// 3. HDM format             -> vulkan/formats/hdm_format.h/.cpp
+// 4. ImGui integration      -> vulkan/eden_imgui.h/.cpp
+// 5. ESE editor             -> ELECTROSCRIBE/PROJECTS/ESE/src/
+// 6. Mesh renderer          -> vulkan/renderers/mesh_renderer.h/.cpp
+//
+// For new code, prefer using the extracted modules. This file maintains
+// backward compatibility with existing projects.
+//
+// See vulkan/REFACTORING_STATUS.md for migration guide.
+// =============================================================================
 
 #include "eden_vulkan_helpers.h"
+
+// NOTE: Extracted modules exist but are NOT included here to avoid duplicate definitions.
+// The original code is kept for backward compatibility.
+// For new projects, use the extracted modules directly:
+//   #include "utils/raycast.h"
+//   #include "platform/file_dialog.h"
+//   #include "formats/hdm_format.h"
+//   #include "renderers/mesh_renderer.h"
 #include <iostream>
 #include <vector>
 #include <cstring>

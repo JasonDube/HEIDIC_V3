@@ -1,3 +1,10 @@
-# ESE Project Configuration
-# Enable ImGui with GLFW/Vulkan for menu bar and UI
+# ESE (Echo Synapse Editor) Project Configuration
+# Using original eden_vulkan_helpers.cpp (fully working)
+
+use_modular_engine=false
+enable_neuroshell=false
 enable_imgui=true
+
+# ESE uses the proven eden_vulkan_helpers.cpp backend
+# VulkanCore migration was attempted but requires too much rework
+# SLAG_LEGION uses VulkanCore successfully as a new project

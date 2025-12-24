@@ -1,0 +1,880 @@
+// ============================================================================
+// SLAG LEGION - A scavenging and piloting game built with HEIDIC
+// ============================================================================
+// 
+// In a post-industrial world, you pilot vehicles through slag heaps and ruins,
+// scavenging valuable materials and trading them for survival.
+//
+// CONTROLS:
+//   Movement (on foot):
+//     W/A/S/D - Move forward/left/backward/right
+//     SPACE   - Jump
+//     Mouse   - Look around
+//     1-9     - Set movement speed
+//
+//   Piloting (in vehicle):
+//     W/S     - Move forward/backward
+//     A/D     - Turn left/right
+//     SPACE   - Ascend
+//     SHIFT   - Descend
+//     E       - Enter/Exit vehicle (near helm)
+//
+//   Interaction:
+//     LEFT CTRL - Pick up / Drop item
+//     T         - Cycle through targets
+//     ESC       - Exit game
+//
+// ============================================================================
+
+// ===========================================
+// EXTERNAL FUNCTIONS - EDEN Engine Interface
+// ===========================================
+
+// Core GLFW/Vulkan
+extern fn heidic_glfw_vulkan_hints(): void;
+extern fn heidic_init_renderer_fps(window: GLFWwindow): i32;
+extern fn heidic_render_fps(window: GLFWwindow, camera_pos_x: f32, camera_pos_y: f32, camera_pos_z: f32, camera_yaw: f32, camera_pitch: f32): void;
+extern fn heidic_cleanup_renderer_fps(): void;
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+extern fn heidic_create_fullscreen_window(title: string): GLFWwindow;
+extern fn heidic_hide_cursor(window: GLFWwindow): void;
+
+// Input
+extern fn heidic_get_cursor_x(window: GLFWwindow): f64;
+extern fn heidic_get_cursor_y(window: GLFWwindow): f64;
+extern fn glfwSetCursorPos(window: GLFWwindow, xpos: f64, ypos: f64): void;
+extern fn glfwSetInputMode(window: GLFWwindow, mode: i32, value: i32): void;
+
+// Math
+extern fn heidic_sin(radians: f32): f32;
+extern fn heidic_cos(radians: f32): f32;
+extern fn heidic_sqrt(value: f32): f32;
+extern fn heidic_convert_degrees_to_radians(degrees: f32): f32;
+
+// Neuroshell UI
+extern fn neuroshell_init(window: GLFWwindow): i32;
+extern fn neuroshell_update(delta_time: f32): void;
+extern fn neuroshell_shutdown(): void;
+extern fn neuroshell_create_image(x: f32, y: f32, width: f32, height: f32, texture_path: string): i32;
+extern fn neuroshell_create_panel(x: f32, y: f32, width: f32, height: f32): i32;
+extern fn neuroshell_set_visible(element_id: i32, visible: bool): void;
+extern fn neuroshell_set_depth(element_id: i32, depth: f32): void;
+extern fn neuroshell_set_color(element_id: i32, r: f32, g: f32, b: f32, a: f32): void;
+extern fn neuroshell_load_font(font_path: string): i32;
+extern fn neuroshell_create_text(x: f32, y: f32, text: string, font_id: i32, char_width: f32, char_height: f32): i32;
+extern fn neuroshell_set_text_string(element_id: i32, text: string): void;
+
+// Raycasting
+extern fn heidic_raycast_cube_hit_center(window: GLFWwindow, cube_x: f32, cube_y: f32, cube_z: f32, cube_sx: f32, cube_sy: f32, cube_sz: f32): i32;
+extern fn heidic_raycast_cube_hit_point_center(window: GLFWwindow, cube_x: f32, cube_y: f32, cube_z: f32, cube_sx: f32, cube_sy: f32, cube_sz: f32): Vec3;
+extern fn heidic_raycast_downward_distance(x: f32, y: f32, z: f32): f32;
+extern fn heidic_raycast_downward_big_cube(x: f32, y: f32, z: f32): i32;
+extern fn heidic_get_center_ray_origin(window: GLFWwindow): Vec3;
+extern fn heidic_get_center_ray_dir(window: GLFWwindow): Vec3;
+extern fn heidic_draw_line(x1: f32, y1: f32, z1: f32, x2: f32, y2: f32, z2: f32, r: f32, g: f32, b: f32): void;
+
+// Cube/Object manipulation
+extern fn heidic_get_cube_position(cube_index: i32): Vec3;
+extern fn heidic_set_cube_position(cube_index: i32, x: f32, y: f32, z: f32): void;
+extern fn heidic_set_cube_rotation(cube_index: i32, yaw_degrees: f32): void;
+extern fn heidic_set_cube_color(cube_index: i32, r: f32, g: f32, b: f32): void;
+extern fn heidic_restore_cube_color(cube_index: i32): void;
+extern fn heidic_get_cube_size(cube_index: i32): f32;
+extern fn heidic_get_cube_size_xyz(cube_index: i32): Vec3;
+
+// Vehicle attachment system
+extern fn heidic_attach_cube_to_vehicle(cube_index: i32, local_x: f32, local_y: f32, local_z: f32): void;
+extern fn heidic_detach_cube_from_vehicle(cube_index: i32): void;
+extern fn heidic_is_cube_attached(cube_index: i32): i32;
+extern fn heidic_update_attached_cubes(vehicle_x: f32, vehicle_y: f32, vehicle_z: f32, vehicle_yaw: f32, vehicle_size_y: f32): void;
+
+// Item properties system
+extern fn heidic_get_item_type_id(cube_index: i32): i32;
+extern fn heidic_get_item_name(cube_index: i32): string;
+
+// Small block system
+extern fn heidic_is_small_block(cube_index: i32): i32;
+extern fn heidic_drop_small_block(cube_index: i32, x: f32, y: f32, z: f32): void;
+extern fn heidic_find_big_block_under(x: f32, y: f32, z: f32): i32;
+extern fn heidic_get_snapped_to_block(cube_index: i32): i32;
+
+// Raycasting - all selectable objects
+extern fn heidic_raycast_from_center(): i32;
+
+// ===========================================
+// MAIN ENTRY POINT
+// ===========================================
+
+fn main(): void {
+    print("============================================\n");
+    print("       SLAG LEGION - v0.1 Alpha\n");
+    print("============================================\n");
+
+    // Initialize GLFW
+    let init_result: i32 = glfwInit();
+    if init_result == 0 {
+        print("FATAL: Failed to initialize GLFW!\n");
+        return;
+    }
+    print("[OK] GLFW initialized\n");
+    
+    heidic_glfw_vulkan_hints();
+    
+    // Create fullscreen window
+    let window: GLFWwindow = heidic_create_fullscreen_window("SLAG LEGION - Scavenge. Pilot. Survive.");
+    if window == 0 {
+        print("FATAL: Failed to create window!\n");
+        glfwTerminate();
+        return;
+    }
+    print("[OK] Window created\n");
+
+    // Initialize renderer
+    let renderer_init: i32 = heidic_init_renderer_fps(window);
+    if renderer_init == 0 {
+        print("FATAL: Failed to initialize renderer!\n");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return;
+    }
+    print("[OK] Vulkan renderer initialized\n");
+    
+    // Initialize Neuroshell UI
+    let neuroshell_init_result: i32 = neuroshell_init(window);
+    let crosshair_id: i32 = 0;
+    let target_item_id_text_id: i32 = 0;
+    let target_distance_text_id: i32 = 0;
+    
+    if neuroshell_init_result != 0 {
+        print("[OK] Neuroshell UI initialized\n");
+        
+        // Create crosshair
+        let crosshair_size: f32 = 64.0;
+        let center_x: f32 = 640.0 - crosshair_size / 2.0;
+        let center_y: f32 = 360.0 - crosshair_size / 2.0;
+        crosshair_id = neuroshell_create_image(center_x, center_y, crosshair_size, crosshair_size, "crosshair.png");
+        
+        if crosshair_id != 0 {
+            neuroshell_set_visible(crosshair_id, true);
+            neuroshell_set_depth(crosshair_id, 100.0);
+        }
+        
+        // Load font and create target panel
+        let font_id: i32 = neuroshell_load_font("fonts/dbyte_2x.png");
+        if font_id != 0 {
+            let panel_x: f32 = 0.0;
+            let panel_y: f32 = 620.0;
+            let target_panel_id: i32 = neuroshell_create_panel(panel_x, panel_y, 150.0, 100.0);
+            
+            if target_panel_id != 0 {
+                neuroshell_set_color(target_panel_id, 0.05, 0.05, 0.05, 1.0);
+                neuroshell_set_depth(target_panel_id, 50.0);
+                neuroshell_set_visible(target_panel_id, true);
+                
+                let text_x: f32 = panel_x + 5.0;
+                let text_y: f32 = panel_y + 5.0;
+                let target_text_id: i32 = neuroshell_create_text(text_x, text_y, "TARGET", font_id, 8.0, 8.0);
+                if target_text_id != 0 {
+                    neuroshell_set_color(target_text_id, 1.0, 1.0, 1.0, 1.0);
+                    neuroshell_set_depth(target_text_id, 60.0);
+                    neuroshell_set_visible(target_text_id, true);
+                }
+                
+                let item_text_y: f32 = text_y + 13.0;
+                target_item_id_text_id = neuroshell_create_text(text_x, item_text_y, "---", font_id, 8.0, 8.0);
+                if target_item_id_text_id != 0 {
+                    neuroshell_set_color(target_item_id_text_id, 1.0, 1.0, 1.0, 1.0);
+                    neuroshell_set_depth(target_item_id_text_id, 60.0);
+                    neuroshell_set_visible(target_item_id_text_id, true);
+                }
+                
+                let dist_text_y: f32 = item_text_y + 13.0;
+                target_distance_text_id = neuroshell_create_text(text_x, dist_text_y, "--- m", font_id, 8.0, 8.0);
+                if target_distance_text_id != 0 {
+                    neuroshell_set_color(target_distance_text_id, 1.0, 1.0, 1.0, 1.0);
+                    neuroshell_set_depth(target_distance_text_id, 60.0);
+                    neuroshell_set_visible(target_distance_text_id, true);
+                }
+            }
+        }
+    }
+    
+    // ===========================================
+    // GAME STATE VARIABLES
+    // ===========================================
+    
+    // Player state
+    let camera_pos: Vec3 = Vec3(0.0, 2.0, 5.0);
+    let camera_yaw: f32 = 0.0;
+    let camera_pitch: f32 = -20.0;
+    let camera_speed: f32 = 5.0;
+    let camera_mouse_sensitivity: f32 = 0.1;
+    let player_velocity_y: f32 = 0.0;
+    let player_gravity: f32 = 20.0;
+    let player_jump_velocity: f32 = 7.0;
+    let player_height: f32 = 1.0;
+    
+    // Mouse tracking
+    let last_mouse_x: f64 = 640.0;
+    let last_mouse_y: f64 = 360.0;
+    let first_mouse: i32 = 1;
+    
+    // Vehicle state
+    let vehicle_yaw: f32 = 0.0;
+    let vehicle_prev_yaw: f32 = 0.0;
+    let vehicle_pilot_speed: f32 = 5.0;
+    let vehicle_turn_speed: f32 = 90.0;
+    let pilot_mode: i32 = 0;
+    let locked_vehicle_offset_x: f32 = 0.0;
+    let locked_vehicle_offset_y: f32 = 0.0;
+    let locked_vehicle_offset_z: f32 = 0.0;
+    
+    // Pickup state
+    let selected_cube_index: i32 = -1;
+    let picked_up_cube_index: i32 = -1;
+    let pickup_distance: f32 = 0.0;
+    let last_selected_cube: i32 = -1;
+    let num_cubes: i32 = 26;  // 18 original + 8 small blocks
+    
+    // Targeting state
+    let current_target_index: i32 = -1;
+    
+    // Input edge detection
+    let space_key_was_pressed: i32 = 0;
+    let e_key_was_pressed: i32 = 0;
+    let t_key_was_pressed: i32 = 0;
+    
+    // Debug
+    let frame_count: i32 = 0;
+    
+    // Setup cursor
+    glfwSetCursorPos(window, last_mouse_x, last_mouse_y);
+    heidic_hide_cursor(window);
+    
+    print("\n");
+    print("Controls: W/A/S/D move, Mouse look, SPACE jump\n");
+    print("          E pilot vehicle, CTRL pickup, T target\n");
+    print("          1-9 speed, ESC exit\n");
+    print("\n");
+    print("Starting game loop...\n");
+    
+    // ===========================================
+    // MAIN GAME LOOP
+    // ===========================================
+    
+    let delta_time: f32 = 0.016;
+    
+    while glfwWindowShouldClose(window) == 0 {
+        glfwPollEvents();
+        heidic_hide_cursor(window);
+        neuroshell_update(delta_time);
+        
+        // ESC to exit
+        if glfwGetKey(window, 256) == 1 {
+            glfwSetWindowShouldClose(window, 1);
+        }
+        
+        // ===========================================
+        // INPUT HANDLING
+        // ===========================================
+        
+        // Get mouse position
+        let mouse_x: f64 = heidic_get_cursor_x(window);
+        let mouse_y: f64 = heidic_get_cursor_y(window);
+        
+        if first_mouse == 1 {
+            last_mouse_x = mouse_x;
+            last_mouse_y = mouse_y;
+            first_mouse = 0;
+        }
+        
+        let xoffset: f64 = mouse_x - last_mouse_x;
+        let yoffset: f64 = last_mouse_y - mouse_y;
+        last_mouse_x = mouse_x;
+        last_mouse_y = mouse_y;
+        
+        let xoffset_f32: f32 = xoffset;
+        let yoffset_f32: f32 = yoffset;
+        
+        camera_yaw = camera_yaw + xoffset_f32 * camera_mouse_sensitivity;
+        camera_pitch = camera_pitch + yoffset_f32 * camera_mouse_sensitivity;
+        
+        if camera_pitch > 89.0 {
+            camera_pitch = 89.0;
+        }
+        if camera_pitch < -89.0 {
+            camera_pitch = -89.0;
+        }
+        
+        // Speed control (1-9 keys)
+        if glfwGetKey(window, 49) == 1 { camera_speed = 5.0; vehicle_pilot_speed = 5.0; }
+        if glfwGetKey(window, 50) == 1 { camera_speed = 10.0; vehicle_pilot_speed = 10.0; }
+        if glfwGetKey(window, 51) == 1 { camera_speed = 15.0; vehicle_pilot_speed = 15.0; }
+        if glfwGetKey(window, 52) == 1 { camera_speed = 20.0; vehicle_pilot_speed = 20.0; }
+        if glfwGetKey(window, 53) == 1 { camera_speed = 25.0; vehicle_pilot_speed = 25.0; }
+        if glfwGetKey(window, 54) == 1 { camera_speed = 30.0; vehicle_pilot_speed = 30.0; }
+        if glfwGetKey(window, 55) == 1 { camera_speed = 35.0; vehicle_pilot_speed = 35.0; }
+        if glfwGetKey(window, 56) == 1 { camera_speed = 40.0; vehicle_pilot_speed = 40.0; }
+        if glfwGetKey(window, 57) == 1 { camera_speed = 45.0; vehicle_pilot_speed = 45.0; }
+        
+        // ===========================================
+        // MOVEMENT VECTORS
+        // ===========================================
+        
+        let yaw_rad: f32 = heidic_convert_degrees_to_radians(camera_yaw);
+        
+        let forward: Vec3 = Vec3(
+            heidic_sin(yaw_rad),
+            0.0,
+            -heidic_cos(yaw_rad)
+        );
+        
+        let right_yaw: f32 = yaw_rad + 1.57079632679;
+        let right: Vec3 = Vec3(
+            heidic_sin(right_yaw),
+            0.0,
+            -heidic_cos(right_yaw)
+        );
+        
+        // Normalize
+        let forward_len: f32 = heidic_sqrt(forward.x * forward.x + forward.z * forward.z);
+        if forward_len > 0.0 {
+            forward.x = forward.x / forward_len;
+            forward.z = forward.z / forward_len;
+        }
+        
+        let right_len: f32 = heidic_sqrt(right.x * right.x + right.z * right.z);
+        if right_len > 0.0 {
+            right.x = right.x / right_len;
+            right.z = right.z / right_len;
+        }
+        
+        // ===========================================
+        // PILOT MODE TOGGLE (E key near helm)
+        // ===========================================
+        
+        let helm_pos: Vec3 = heidic_get_cube_position(15);  // HELM_INDEX
+        let dx_to_helm: f32 = camera_pos.x - helm_pos.x;
+        let dy_to_helm: f32 = camera_pos.y - helm_pos.y;
+        let dz_to_helm: f32 = camera_pos.z - helm_pos.z;
+        let dist_to_helm: f32 = heidic_sqrt(dx_to_helm * dx_to_helm + dy_to_helm * dy_to_helm + dz_to_helm * dz_to_helm);
+        let near_helm: i32 = 0;
+        if dist_to_helm <= 2.0 {
+            near_helm = 1;
+        }
+        
+        let e_key_pressed: i32 = glfwGetKey(window, 69);
+        if e_key_pressed == 1 && e_key_was_pressed == 0 && near_helm == 1 {
+            if pilot_mode == 0 {
+                pilot_mode = 1;
+                vehicle_prev_yaw = vehicle_yaw;
+                
+                let rect_pos: Vec3 = heidic_get_cube_position(14);
+                let rect_size: Vec3 = heidic_get_cube_size_xyz(14);
+                let rect_top: f32 = rect_pos.y + (rect_size.y / 2.0);
+                let world_offset_x: f32 = camera_pos.x - rect_pos.x;
+                let world_offset_z: f32 = camera_pos.z - rect_pos.z;
+                locked_vehicle_offset_y = camera_pos.y - rect_top;
+                
+                let v_yaw_rad: f32 = vehicle_yaw * 0.0174532925;
+                locked_vehicle_offset_x = world_offset_x * heidic_cos(v_yaw_rad) - world_offset_z * heidic_sin(v_yaw_rad);
+                locked_vehicle_offset_z = world_offset_x * heidic_sin(v_yaw_rad) + world_offset_z * heidic_cos(v_yaw_rad);
+                
+                print("[PILOT] Entered pilot mode\n");
+            } else {
+                pilot_mode = 0;
+                print("[PILOT] Exited pilot mode\n");
+            }
+        }
+        e_key_was_pressed = e_key_pressed;
+        
+        // ===========================================
+        // PLAYER MOVEMENT (when not piloting)
+        // ===========================================
+        
+        if pilot_mode == 0 {
+            let velocity: Vec3 = Vec3(0.0, 0.0, 0.0);
+            
+            if glfwGetKey(window, 87) == 1 {  // W
+                velocity.x = velocity.x + forward.x * camera_speed * delta_time;
+                velocity.z = velocity.z + forward.z * camera_speed * delta_time;
+            }
+            if glfwGetKey(window, 83) == 1 {  // S
+                velocity.x = velocity.x - forward.x * camera_speed * delta_time;
+                velocity.z = velocity.z - forward.z * camera_speed * delta_time;
+            }
+            if glfwGetKey(window, 65) == 1 {  // A
+                velocity.x = velocity.x - right.x * camera_speed * delta_time;
+                velocity.z = velocity.z - right.z * camera_speed * delta_time;
+            }
+            if glfwGetKey(window, 68) == 1 {  // D
+                velocity.x = velocity.x + right.x * camera_speed * delta_time;
+                velocity.z = velocity.z + right.z * camera_speed * delta_time;
+            }
+            
+            // Ground check and jump
+            let ground_distance: f32 = heidic_raycast_downward_distance(camera_pos.x, camera_pos.y, camera_pos.z);
+            let is_on_ground: i32 = 0;
+            
+            if ground_distance >= 0.0 {
+                let distance_to_feet: f32 = ground_distance - player_height;
+                if distance_to_feet >= -0.25 && distance_to_feet <= 0.25 {
+                    is_on_ground = 1;
+                }
+            }
+            
+            let space_key_pressed: i32 = glfwGetKey(window, 32);
+            if space_key_pressed == 1 && space_key_was_pressed == 0 && is_on_ground == 1 {
+                player_velocity_y = player_jump_velocity;
+            }
+            space_key_was_pressed = space_key_pressed;
+            
+            // Gravity
+            if is_on_ground == 0 {
+                player_velocity_y = player_velocity_y - player_gravity * delta_time;
+            } else {
+                if player_velocity_y < 0.0 {
+                    player_velocity_y = 0.0;
+                }
+            }
+            
+            // Update position
+            camera_pos.x = camera_pos.x + velocity.x;
+            camera_pos.y = camera_pos.y + player_velocity_y * delta_time;
+            camera_pos.z = camera_pos.z + velocity.z;
+            
+            // Ground collision
+            let new_ground_distance: f32 = heidic_raycast_downward_distance(camera_pos.x, camera_pos.y, camera_pos.z);
+            if new_ground_distance >= 0.0 && new_ground_distance < player_height {
+                let ground_y: f32 = camera_pos.y - new_ground_distance;
+                camera_pos.y = ground_y + player_height;
+                if player_velocity_y < 0.0 {
+                    player_velocity_y = 0.0;
+                }
+            }
+        }
+        
+        // ===========================================
+        // VEHICLE PILOTING
+        // ===========================================
+        
+        if pilot_mode == 1 {
+            let current_rect_pos: Vec3 = heidic_get_cube_position(14);
+            let rect_size: Vec3 = heidic_get_cube_size_xyz(14);
+            let vehicle_move_delta: Vec3 = Vec3(0.0, 0.0, 0.0);
+            
+            let vehicle_yaw_rad: f32 = vehicle_yaw * 0.0174532925;
+            
+            // W - Forward
+            if glfwGetKey(window, 87) == 1 {
+                let fwd_x: f32 = heidic_sin(vehicle_yaw_rad);
+                let fwd_z: f32 = heidic_cos(vehicle_yaw_rad);
+                vehicle_move_delta.x = fwd_x * vehicle_pilot_speed * delta_time;
+                vehicle_move_delta.z = fwd_z * vehicle_pilot_speed * delta_time;
+            }
+            
+            // S - Backward
+            if glfwGetKey(window, 83) == 1 {
+                let fwd_x: f32 = heidic_sin(vehicle_yaw_rad);
+                let fwd_z: f32 = heidic_cos(vehicle_yaw_rad);
+                vehicle_move_delta.x = vehicle_move_delta.x - fwd_x * vehicle_pilot_speed * delta_time;
+                vehicle_move_delta.z = vehicle_move_delta.z - fwd_z * vehicle_pilot_speed * delta_time;
+            }
+            
+            // A - Turn left
+            if glfwGetKey(window, 65) == 1 {
+                vehicle_yaw = vehicle_yaw + vehicle_turn_speed * delta_time;
+                if vehicle_yaw >= 360.0 {
+                    vehicle_yaw = vehicle_yaw - 360.0;
+                }
+            }
+            
+            // D - Turn right
+            if glfwGetKey(window, 68) == 1 {
+                vehicle_yaw = vehicle_yaw - vehicle_turn_speed * delta_time;
+                if vehicle_yaw < 0.0 {
+                    vehicle_yaw = vehicle_yaw + 360.0;
+                }
+            }
+            
+            // Space - Ascend
+            if glfwGetKey(window, 32) == 1 {
+                vehicle_move_delta.y = vehicle_pilot_speed * delta_time;
+            }
+            
+            // Left Shift - Descend
+            if glfwGetKey(window, 340) == 1 {
+                vehicle_move_delta.y = vehicle_move_delta.y - vehicle_pilot_speed * delta_time;
+            }
+            
+            // Update vehicle
+            let new_rect_x: f32 = current_rect_pos.x + vehicle_move_delta.x;
+            let new_rect_y: f32 = current_rect_pos.y + vehicle_move_delta.y;
+            let new_rect_z: f32 = current_rect_pos.z + vehicle_move_delta.z;
+            
+            heidic_set_cube_position(14, new_rect_x, new_rect_y, new_rect_z);
+            heidic_set_cube_rotation(14, vehicle_yaw);
+            heidic_update_attached_cubes(new_rect_x, new_rect_y, new_rect_z, vehicle_yaw, rect_size.y);
+            
+            // Update helm position
+            let block_offset_z: f32 = (rect_size.z / 2.0) - 0.25;
+            let block_offset_x_rot: f32 = block_offset_z * heidic_sin(vehicle_yaw_rad);
+            let block_offset_z_rot: f32 = block_offset_z * heidic_cos(vehicle_yaw_rad);
+            let block_x: f32 = new_rect_x + block_offset_x_rot;
+            let block_y: f32 = new_rect_y + (rect_size.y / 2.0) + 0.25;
+            let block_z: f32 = new_rect_z + block_offset_z_rot;
+            heidic_set_cube_position(15, block_x, block_y, block_z);
+            heidic_set_cube_rotation(15, vehicle_yaw);
+            
+            // Update player position
+            let player_offset_x_rot: f32 = locked_vehicle_offset_x * heidic_cos(vehicle_yaw_rad) + locked_vehicle_offset_z * heidic_sin(vehicle_yaw_rad);
+            let player_offset_z_rot: f32 = -locked_vehicle_offset_x * heidic_sin(vehicle_yaw_rad) + locked_vehicle_offset_z * heidic_cos(vehicle_yaw_rad);
+            
+            camera_pos.x = new_rect_x + player_offset_x_rot;
+            camera_pos.y = new_rect_y + rect_size.y / 2.0 + locked_vehicle_offset_y;
+            camera_pos.z = new_rect_z + player_offset_z_rot;
+            
+            vehicle_prev_yaw = vehicle_yaw;
+        } else {
+            // Keep vehicle in place when not piloting
+            let current_rect_pos: Vec3 = heidic_get_cube_position(14);
+            let rect_size: Vec3 = heidic_get_cube_size_xyz(14);
+            
+            heidic_set_cube_rotation(14, vehicle_yaw);
+            
+            let vehicle_yaw_rad: f32 = vehicle_yaw * 0.0174532925;
+            let block_offset_z: f32 = (rect_size.z / 2.0) - 0.25;
+            let block_offset_x_rot: f32 = block_offset_z * heidic_sin(vehicle_yaw_rad);
+            let block_offset_z_rot: f32 = block_offset_z * heidic_cos(vehicle_yaw_rad);
+            let block_x: f32 = current_rect_pos.x + block_offset_x_rot;
+            let block_y: f32 = current_rect_pos.y + (rect_size.y / 2.0) + 0.25;
+            let block_z: f32 = current_rect_pos.z + block_offset_z_rot;
+            heidic_set_cube_position(15, block_x, block_y, block_z);
+            heidic_set_cube_rotation(15, vehicle_yaw);
+            
+            heidic_update_attached_cubes(current_rect_pos.x, current_rect_pos.y, current_rect_pos.z, vehicle_yaw, rect_size.y);
+        }
+        
+        // ===========================================
+        // RENDER
+        // ===========================================
+        
+        heidic_render_fps(window, camera_pos.x, camera_pos.y, camera_pos.z, camera_yaw, camera_pitch);
+        
+        // ===========================================
+        // PICKUP SYSTEM
+        // ===========================================
+        
+        let closest_hit_distance: f32 = 1000.0;
+        let new_selected_cube: i32 = -1;
+        
+        let cube_index: i32 = 0;
+        while cube_index < num_cubes {
+            if cube_index != 14 && cube_index != 15 {
+                let cube_pos: Vec3 = heidic_get_cube_position(cube_index);
+                let cube_size: Vec3 = heidic_get_cube_size_xyz(cube_index);
+                
+                let hit: i32 = heidic_raycast_cube_hit_center(window, cube_pos.x, cube_pos.y, cube_pos.z, cube_size.x, cube_size.y, cube_size.z);
+                
+                if hit == 1 {
+                    let hit_point: Vec3 = heidic_raycast_cube_hit_point_center(window, cube_pos.x, cube_pos.y, cube_pos.z, cube_size.x, cube_size.y, cube_size.z);
+                    let dx: f32 = hit_point.x - camera_pos.x;
+                    let dy: f32 = hit_point.y - camera_pos.y;
+                    let dz: f32 = hit_point.z - camera_pos.z;
+                    let dist: f32 = heidic_sqrt(dx * dx + dy * dy + dz * dz);
+                    
+                    if dist < closest_hit_distance {
+                        closest_hit_distance = dist;
+                        new_selected_cube = cube_index;
+                    }
+                }
+            }
+            cube_index = cube_index + 1;
+        }
+        
+        if picked_up_cube_index >= 0 {
+            selected_cube_index = picked_up_cube_index;
+        } else {
+            selected_cube_index = new_selected_cube;
+        }
+        
+        // Visual feedback
+        if selected_cube_index != last_selected_cube {
+            if last_selected_cube >= 0 && last_selected_cube != 14 && last_selected_cube != 15 {
+                heidic_restore_cube_color(last_selected_cube);
+            }
+            if selected_cube_index >= 0 && selected_cube_index != 14 && selected_cube_index != 15 {
+                heidic_set_cube_color(selected_cube_index, 1.0, 1.0, 1.0);
+            }
+            last_selected_cube = selected_cube_index;
+        }
+        
+        // Handle pickup/drop (Left Ctrl)
+        let ctrl_pressed: i32 = glfwGetKey(window, 341);
+        
+        if ctrl_pressed == 1 {
+            if selected_cube_index >= 0 && selected_cube_index != 14 && selected_cube_index != 15 && picked_up_cube_index < 0 {
+                let cube_pos: Vec3 = heidic_get_cube_position(selected_cube_index);
+                
+                let is_attached: i32 = heidic_is_cube_attached(selected_cube_index);
+                if is_attached == 1 {
+                    heidic_detach_cube_from_vehicle(selected_cube_index);
+                }
+                
+                let p_yaw_rad: f32 = camera_yaw * 0.0174532925;
+                let p_pitch_rad: f32 = camera_pitch * 0.0174532925;
+                let fwd: Vec3 = Vec3(
+                    heidic_sin(p_yaw_rad) * heidic_cos(p_pitch_rad),
+                    heidic_sin(p_pitch_rad),
+                    -heidic_cos(p_yaw_rad) * heidic_cos(p_pitch_rad)
+                );
+                
+                let to_cube: Vec3 = Vec3(
+                    cube_pos.x - camera_pos.x,
+                    cube_pos.y - camera_pos.y,
+                    cube_pos.z - camera_pos.z
+                );
+                
+                pickup_distance = to_cube.x * fwd.x + to_cube.y * fwd.y + to_cube.z * fwd.z;
+                if pickup_distance < 1.0 {
+                    pickup_distance = 1.0;
+                }
+                
+                picked_up_cube_index = selected_cube_index;
+            }
+            
+            if picked_up_cube_index >= 0 {
+                let p_yaw_rad: f32 = camera_yaw * 0.0174532925;
+                let p_pitch_rad: f32 = camera_pitch * 0.0174532925;
+                let fwd: Vec3 = Vec3(
+                    heidic_sin(p_yaw_rad) * heidic_cos(p_pitch_rad),
+                    heidic_sin(p_pitch_rad),
+                    -heidic_cos(p_yaw_rad) * heidic_cos(p_pitch_rad)
+                );
+                
+                let new_cube_x: f32 = camera_pos.x + fwd.x * pickup_distance;
+                let new_cube_y: f32 = camera_pos.y + fwd.y * pickup_distance;
+                let new_cube_z: f32 = camera_pos.z + fwd.z * pickup_distance;
+                
+                heidic_set_cube_position(picked_up_cube_index, new_cube_x, new_cube_y, new_cube_z);
+            }
+        } else {
+            if picked_up_cube_index >= 0 {
+                // Get dropped cube info
+                let dropped_cube_pos: Vec3 = heidic_get_cube_position(picked_up_cube_index);
+                let dropped_cube_size_vec: Vec3 = heidic_get_cube_size_xyz(picked_up_cube_index);
+                let dropped_cube_size: f32 = dropped_cube_size_vec.x;  // Assume uniform
+                let cube_half: f32 = dropped_cube_size / 2.0;
+                
+                // Check if cube is being dropped on the vehicle (index 14)
+                let vehicle_pos: Vec3 = heidic_get_cube_position(14);
+                let vehicle_size: Vec3 = heidic_get_cube_size_xyz(14);
+                let vehicle_top: f32 = vehicle_pos.y + (vehicle_size.y / 2.0);
+                
+                // Convert to vehicle local space
+                let vehicle_yaw_rad: f32 = vehicle_yaw * 0.0174532925;
+                let world_offset_x: f32 = dropped_cube_pos.x - vehicle_pos.x;
+                let world_offset_z: f32 = dropped_cube_pos.z - vehicle_pos.z;
+                let local_offset_x: f32 = world_offset_x * heidic_cos(vehicle_yaw_rad) - world_offset_z * heidic_sin(vehicle_yaw_rad);
+                let local_offset_z: f32 = world_offset_x * heidic_sin(vehicle_yaw_rad) + world_offset_z * heidic_cos(vehicle_yaw_rad);
+                
+                // Check bounds
+                let half_width: f32 = vehicle_size.x / 2.0;
+                let half_length: f32 = vehicle_size.z / 2.0;
+                let tolerance: f32 = 0.5;
+                let cube_bottom: f32 = dropped_cube_pos.y - cube_half;
+                let height_above_vehicle: f32 = cube_bottom - vehicle_top;
+                
+                let within_bounds: i32 = 0;
+                if local_offset_x >= -(half_width + tolerance) && local_offset_x <= (half_width + tolerance) &&
+                   local_offset_z >= -(half_length + tolerance) && local_offset_z <= (half_length + tolerance) {
+                    within_bounds = 1;
+                }
+                
+                let on_vehicle: i32 = 0;
+                if within_bounds == 1 && height_above_vehicle >= -1.0 && height_above_vehicle <= 10.0 {
+                    // Dropped on vehicle - attach it!
+                    on_vehicle = 1;
+                    let snap_y: f32 = vehicle_top + cube_half;
+                    heidic_set_cube_position(picked_up_cube_index, dropped_cube_pos.x, snap_y, dropped_cube_pos.z);
+                    
+                    let final_local_y: f32 = cube_half;
+                    heidic_attach_cube_to_vehicle(picked_up_cube_index, local_offset_x, final_local_y, local_offset_z);
+                    heidic_set_cube_rotation(picked_up_cube_index, vehicle_yaw);
+                    print("[ATTACH] Dropped cube on vehicle\n");
+                }
+                
+                // If not on vehicle, check for big cube snapping (small cubes only)
+                if on_vehicle == 0 && dropped_cube_size < 1.0 {
+                    let ray_start_y: f32 = dropped_cube_pos.y + 0.1;
+                    let big_cube_below: i32 = heidic_raycast_downward_big_cube(dropped_cube_pos.x, ray_start_y, dropped_cube_pos.z);
+                    
+                    if big_cube_below >= 0 {
+                        // Snap small cube to center of big cube's top face
+                        let big_cube_pos: Vec3 = heidic_get_cube_position(big_cube_below);
+                        let big_cube_size: f32 = heidic_get_cube_size(big_cube_below);
+                        let big_cube_top: f32 = big_cube_pos.y + (big_cube_size / 2.0);
+                        let small_cube_center_y: f32 = big_cube_top + (dropped_cube_size / 2.0);
+                        
+                        heidic_set_cube_position(picked_up_cube_index, big_cube_pos.x, small_cube_center_y, big_cube_pos.z);
+                        print("[SNAP] Small cube snapped to big cube\n");
+                    }
+                }
+                
+                picked_up_cube_index = -1;
+                pickup_distance = 0.0;
+            }
+        }
+        
+        // ===========================================
+        // TARGETING SYSTEM (T key)
+        // ===========================================
+        
+        let t_key_pressed: i32 = glfwGetKey(window, 84);
+        if t_key_pressed == 1 && t_key_was_pressed == 0 {
+            let target_count: i32 = 0;
+            let target_indices: [i32] = [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1];
+            let target_distances: [f32] = [999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0];
+            
+            let t_cube_index: i32 = 0;
+            while t_cube_index < num_cubes {
+                let item_type_id: i32 = heidic_get_item_type_id(t_cube_index);
+                if item_type_id > 0 {
+                    let cube_pos: Vec3 = heidic_get_cube_position(t_cube_index);
+                    let t_dx: f32 = cube_pos.x - camera_pos.x;
+                    let t_dy: f32 = cube_pos.y - camera_pos.y;
+                    let t_dz: f32 = cube_pos.z - camera_pos.z;
+                    let distance: f32 = heidic_sqrt(t_dx * t_dx + t_dy * t_dy + t_dz * t_dz);
+                    
+                    target_indices[target_count] = t_cube_index;
+                    target_distances[target_count] = distance;
+                    target_count = target_count + 1;
+                }
+                t_cube_index = t_cube_index + 1;
+            }
+            
+            // Sort by distance
+            let i: i32 = 0;
+            while i < target_count - 1 {
+                let j: i32 = 0;
+                while j < target_count - 1 - i {
+                    if target_distances[j] > target_distances[j + 1] {
+                        let temp_dist: f32 = target_distances[j];
+                        target_distances[j] = target_distances[j + 1];
+                        target_distances[j + 1] = temp_dist;
+                        
+                        let temp_idx: i32 = target_indices[j];
+                        target_indices[j] = target_indices[j + 1];
+                        target_indices[j + 1] = temp_idx;
+                    }
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            
+            if target_count > 0 {
+                current_target_index = current_target_index + 1;
+                if current_target_index >= target_count {
+                    current_target_index = 0;
+                }
+                
+                let selected_target_idx: i32 = target_indices[current_target_index];
+                let selected_item_name: string = heidic_get_item_name(selected_target_idx);
+                let selected_distance: f32 = target_distances[current_target_index];
+                
+                if target_item_id_text_id != 0 {
+                    neuroshell_set_text_string(target_item_id_text_id, selected_item_name);
+                }
+                
+                if target_distance_text_id != 0 {
+                    let distance_text: string = "{selected_distance} m";
+                    neuroshell_set_text_string(target_distance_text_id, distance_text);
+                }
+            }
+        }
+        t_key_was_pressed = t_key_pressed;
+        
+        // ===========================================
+        // PHYSICS (gravity for dropped cubes)
+        // ===========================================
+        
+        let gravity_cube_index: i32 = 0;
+        while gravity_cube_index < num_cubes {
+            let is_attached: i32 = heidic_is_cube_attached(gravity_cube_index);
+            if gravity_cube_index != picked_up_cube_index && 
+               gravity_cube_index != 14 && 
+               gravity_cube_index != 15 && 
+               gravity_cube_index != 16 && 
+               gravity_cube_index != 17 && 
+               is_attached == 0 {
+                
+                let g_cube_pos: Vec3 = heidic_get_cube_position(gravity_cube_index);
+                let cube_size: f32 = heidic_get_cube_size(gravity_cube_index);
+                let half_size: f32 = cube_size / 2.0;
+                let cube_bottom: f32 = g_cube_pos.y - half_size;
+                
+                // OPTIMIZATION: Only process if NOT already on ground
+                if cube_bottom > 0.05 {
+                    // Check if small cube on big cube (only if above ground)
+                    let on_big_cube: i32 = 0;
+                    if cube_size < 1.0 {
+                        let big_cube_below: i32 = heidic_raycast_downward_big_cube(g_cube_pos.x, g_cube_pos.y + 0.1, g_cube_pos.z);
+                        if big_cube_below >= 0 {
+                            let big_pos: Vec3 = heidic_get_cube_position(big_cube_below);
+                            let big_size: f32 = heidic_get_cube_size(big_cube_below);
+                            let big_top: f32 = big_pos.y + big_size / 2.0;
+                            let small_target_y: f32 = big_top + half_size;
+                            
+                            // If close to target, snap and stop
+                            if g_cube_pos.y > small_target_y - 0.2 && g_cube_pos.y < small_target_y + 0.5 {
+                                heidic_set_cube_position(gravity_cube_index, big_pos.x, small_target_y, big_pos.z);
+                                on_big_cube = 1;
+                            }
+                        }
+                    }
+                    
+                    // Apply gravity if not on big cube
+                    if on_big_cube == 0 {
+                        let target_y: f32 = half_size;
+                        let gravity_speed: f32 = 0.1;
+                        let new_y: f32 = g_cube_pos.y - gravity_speed;
+                        if new_y < target_y {
+                            new_y = target_y;
+                        }
+                        heidic_set_cube_position(gravity_cube_index, g_cube_pos.x, new_y, g_cube_pos.z);
+                    }
+                }
+                // else: already on ground, skip raycast (optimization)
+            }
+            gravity_cube_index = gravity_cube_index + 1;
+        }
+        
+        // ===========================================
+        // DEBUG
+        // ===========================================
+        
+        let ray_origin: Vec3 = heidic_get_center_ray_origin(window);
+        let ray_dir: Vec3 = heidic_get_center_ray_dir(window);
+        let ray_length: f32 = 50.0;
+        let ray_end: Vec3 = Vec3(
+            ray_origin.x + ray_dir.x * ray_length,
+            ray_origin.y + ray_dir.y * ray_length,
+            ray_origin.z + ray_dir.z * ray_length
+        );
+        heidic_draw_line(ray_origin.x, ray_origin.y, ray_origin.z, ray_end.x, ray_end.y, ray_end.z, 1.0, 1.0, 0.0);
+        
+        frame_count = frame_count + 1;
+        heidic_sleep_ms(16);
+    }
+
+    // ===========================================
+    // CLEANUP
+    // ===========================================
+    
+    print("\nShutting down...\n");
+    neuroshell_shutdown();
+    heidic_cleanup_renderer_fps();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    print("SLAG LEGION terminated successfully.\n");
+}

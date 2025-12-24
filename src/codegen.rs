@@ -154,6 +154,7 @@ impl CodeGenerator {
             output.push_str("#include \"stdlib/texture_resource.h\"\n");
             output.push_str("#include \"stdlib/mesh_resource.h\"\n");
             output.push_str("#include \"stdlib/audio_resource.h\"\n");
+            output.push_str("#include \"stdlib/video_resource.h\"\n");
             output.push_str("\n");
         }
         
@@ -228,6 +229,172 @@ impl CodeGenerator {
                         output.push_str("    if (!res) return;\n");
                         output.push_str("    auto* audio = res->get();\n");
                         output.push_str("    if (audio) audio->stop();\n");
+                        output.push_str("}\n\n");
+                    }
+                }
+            }
+            
+            // Generate helper functions for video resources (play, pause, stop, seek, update, etc.)
+            output.push_str("// Video resource helper functions (for HEIDIC access)\n");
+            for item in &program.items {
+                if let Item::Resource(res) = item {
+                    let resource_type = res.resource_type.as_str();
+                    if resource_type == "Video" {
+                        let accessor_name = format!("get_resource_{}", res.name.to_lowercase());
+                        let name_lower = res.name.to_lowercase();
+                        
+                        // Play function (with optional loop parameter)
+                        output.push_str(&format!(
+                            "extern \"C\" int32_t play_video_{}(int32_t loop) {{\n",
+                            name_lower
+                        ));
+                        output.push_str(&format!(
+                            "    auto* res = {}();\n",
+                            accessor_name
+                        ));
+                        output.push_str("    if (!res) { std::cerr << \"[Video] Resource pointer is null\" << std::endl; return 0; }\n");
+                        output.push_str("    auto* video = res->get();\n");
+                        output.push_str("    if (!video) { std::cerr << \"[Video] VideoResource is null\" << std::endl; return 0; }\n");
+                        output.push_str("    return video->play(loop != 0) ? 1 : 0;\n");
+                        output.push_str("}\n\n");
+                        
+                        // Pause function
+                        output.push_str(&format!(
+                            "extern \"C\" void pause_video_{}() {{\n",
+                            name_lower
+                        ));
+                        output.push_str(&format!(
+                            "    auto* res = {}();\n",
+                            accessor_name
+                        ));
+                        output.push_str("    if (!res) return;\n");
+                        output.push_str("    auto* video = res->get();\n");
+                        output.push_str("    if (video) video->pause();\n");
+                        output.push_str("}\n\n");
+                        
+                        // Stop function
+                        output.push_str(&format!(
+                            "extern \"C\" void stop_video_{}() {{\n",
+                            name_lower
+                        ));
+                        output.push_str(&format!(
+                            "    auto* res = {}();\n",
+                            accessor_name
+                        ));
+                        output.push_str("    if (!res) return;\n");
+                        output.push_str("    auto* video = res->get();\n");
+                        output.push_str("    if (video) video->stop();\n");
+                        output.push_str("}\n\n");
+                        
+                        // Seek function
+                        output.push_str(&format!(
+                            "extern \"C\" void seek_video_{}(double seconds) {{\n",
+                            name_lower
+                        ));
+                        output.push_str(&format!(
+                            "    auto* res = {}();\n",
+                            accessor_name
+                        ));
+                        output.push_str("    if (!res) return;\n");
+                        output.push_str("    auto* video = res->get();\n");
+                        output.push_str("    if (video) video->seek(seconds);\n");
+                        output.push_str("}\n\n");
+                        
+                        // Update function (returns 1 if new frame available)
+                        output.push_str(&format!(
+                            "extern \"C\" int32_t update_video_{}() {{\n",
+                            name_lower
+                        ));
+                        output.push_str(&format!(
+                            "    auto* res = {}();\n",
+                            accessor_name
+                        ));
+                        output.push_str("    if (!res) return 0;\n");
+                        output.push_str("    auto* video = res->get();\n");
+                        output.push_str("    if (!video) return 0;\n");
+                        output.push_str("    return video->update() ? 1 : 0;\n");
+                        output.push_str("}\n\n");
+                        
+                        // Get frame data function (returns pointer to RGBA data)
+                        output.push_str(&format!(
+                            "extern \"C\" const uint8_t* get_video_frame_{}() {{\n",
+                            name_lower
+                        ));
+                        output.push_str(&format!(
+                            "    auto* res = {}();\n",
+                            accessor_name
+                        ));
+                        output.push_str("    if (!res) return nullptr;\n");
+                        output.push_str("    auto* video = res->get();\n");
+                        output.push_str("    if (!video) return nullptr;\n");
+                        output.push_str("    return video->getFrameData();\n");
+                        output.push_str("}\n\n");
+                        
+                        // Get video properties
+                        output.push_str(&format!(
+                            "extern \"C\" int32_t get_video_width_{}() {{\n",
+                            name_lower
+                        ));
+                        output.push_str(&format!(
+                            "    auto* res = {}();\n",
+                            accessor_name
+                        ));
+                        output.push_str("    if (!res) return 0;\n");
+                        output.push_str("    auto* video = res->get();\n");
+                        output.push_str("    return video ? video->getWidth() : 0;\n");
+                        output.push_str("}\n\n");
+                        
+                        output.push_str(&format!(
+                            "extern \"C\" int32_t get_video_height_{}() {{\n",
+                            name_lower
+                        ));
+                        output.push_str(&format!(
+                            "    auto* res = {}();\n",
+                            accessor_name
+                        ));
+                        output.push_str("    if (!res) return 0;\n");
+                        output.push_str("    auto* video = res->get();\n");
+                        output.push_str("    return video ? video->getHeight() : 0;\n");
+                        output.push_str("}\n\n");
+                        
+                        output.push_str(&format!(
+                            "extern \"C\" double get_video_duration_{}() {{\n",
+                            name_lower
+                        ));
+                        output.push_str(&format!(
+                            "    auto* res = {}();\n",
+                            accessor_name
+                        ));
+                        output.push_str("    if (!res) return 0.0;\n");
+                        output.push_str("    auto* video = res->get();\n");
+                        output.push_str("    return video ? video->getDuration() : 0.0;\n");
+                        output.push_str("}\n\n");
+                        
+                        output.push_str(&format!(
+                            "extern \"C\" double get_video_current_time_{}() {{\n",
+                            name_lower
+                        ));
+                        output.push_str(&format!(
+                            "    auto* res = {}();\n",
+                            accessor_name
+                        ));
+                        output.push_str("    if (!res) return 0.0;\n");
+                        output.push_str("    auto* video = res->get();\n");
+                        output.push_str("    return video ? video->getCurrentTime() : 0.0;\n");
+                        output.push_str("}\n\n");
+                        
+                        // Is playing function
+                        output.push_str(&format!(
+                            "extern \"C\" int32_t is_video_playing_{}() {{\n",
+                            name_lower
+                        ));
+                        output.push_str(&format!(
+                            "    auto* res = {}();\n",
+                            accessor_name
+                        ));
+                        output.push_str("    if (!res) return 0;\n");
+                        output.push_str("    auto* video = res->get();\n");
+                        output.push_str("    return (video && video->isPlaying()) ? 1 : 0;\n");
                         output.push_str("}\n\n");
                     }
                 }
@@ -1078,6 +1245,7 @@ impl CodeGenerator {
             "Mesh" => "MeshResource",
             "Sound" => "AudioResource",
             "Music" => "AudioResource",
+            "Video" => "VideoResource",
             _ => {
                 // Unknown resource type - use as-is (might be custom)
                 &res.resource_type
@@ -1099,6 +1267,7 @@ impl CodeGenerator {
             "Mesh" => "MeshResource",
             "Sound" => "AudioResource",
             "Music" => "AudioResource",
+            "Video" => "VideoResource",
             _ => &res.resource_type
         };
         

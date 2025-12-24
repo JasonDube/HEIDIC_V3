@@ -1,0 +1,5 @@
+use_modular_engine=true
+engine_sources=engine/test.cpp,../../../vulkan/core/vulkan_core.cpp
+enable_neuroshell=false
+enable_imgui=false
+

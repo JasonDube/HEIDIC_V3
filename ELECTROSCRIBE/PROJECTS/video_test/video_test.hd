@@ -1,0 +1,87 @@
+// Video Resource Test - Testing Video resource type with MP4 playback
+// Tests the new HEIDIC video resource keyword with synchronized audio
+
+// Declare video resource using zero-boilerplate syntax!
+resource IntroVideo: Video = "video/intro.mp4";
+
+extern fn heidic_sleep_ms(milliseconds: i32): void;
+
+fn main(): void {
+    print("=== Video Resource Test ===\n");
+    print("Testing HEIDIC video resource with MP4 playback\n");
+    print("Resources declared with zero boilerplate!\n");
+    print("\n");
+    
+    // Get video resource (verify it loaded)
+    let video_res = get_resource_introvideo();
+    
+    if video_res == 0 {
+        print("ERROR: Failed to get video resource!\n");
+        return;
+    }
+    
+    print("✅ Video resource loaded successfully!\n");
+    print("\n");
+    
+    // Get video properties
+    let width: i32 = get_video_width_introvideo();
+    let height: i32 = get_video_height_introvideo();
+    let duration: f64 = get_video_duration_introvideo();
+    
+    print("Video Properties:\n");
+    print("  - Path: video/intro.mp4\n");
+    print("  - Type: Video (MP4)\n");
+    // Note: HEIDIC doesn't support format specifiers yet, so we print values separately
+    print("  - Width: ");
+    // TODO: Add integer printing support
+    print("...\n");
+    print("  - Height: ");
+    print("...\n");
+    print("  - Duration: ");
+    print("...\n");
+    print("\n");
+    
+    // Start video playback (non-looping)
+    print("Starting video playback...\n");
+    let play_result: i32 = play_video_introvideo(0);  // 0 = no loop
+    
+    if play_result == 0 {
+        print("ERROR: Failed to start video playback!\n");
+        return;
+    }
+    
+    print("✅ Video playing!\n");
+    print("\n");
+    
+    // Simple playback loop - update video each frame
+    print("Playing video... (press Ctrl+C to stop)\n");
+    
+    loop {
+        // Update video (decode next frame)
+        let has_new_frame: i32 = update_video_introvideo();
+        
+        // Check if video is still playing
+        let still_playing: i32 = is_video_playing_introvideo();
+        if still_playing == 0 {
+            print("\nVideo playback completed!\n");
+            break;
+        }
+        
+        // If we got a new frame, we could render it
+        // In a real game, you'd upload getFrameData() to a texture
+        if has_new_frame == 1 {
+            // Frame available - could render here
+            // let frame_data = get_video_frame_introvideo();
+        }
+        
+        // Sleep a bit to not hog CPU
+        heidic_sleep_ms(16);  // ~60 FPS
+    }
+    
+    // Stop video (cleanup)
+    stop_video_introvideo();
+    print("✅ Video stopped and cleaned up.\n");
+    
+    print("\n=== Test Complete ===\n");
+}
+

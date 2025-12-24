@@ -1,0 +1,8 @@
+# EDEN - Level Editor
+# Uses VulkanCore backend with Lighting Module
+
+use_modular_engine=true
+engine_sources=engine/eden_engine.cpp,engine/scene.cpp,../../../vulkan/core/vulkan_core.cpp,../../../vulkan/lighting/lighting_manager.cpp,../../../vulkan/platform/file_dialog.cpp,../../../vulkan/utils/glb_loader.cpp
+enable_neuroshell=false
+enable_imgui=true
+

@@ -1,0 +1,10 @@
+# SLAG LEGION Project Configuration
+# Using original sl_engine.cpp (fully working)
+
+use_modular_engine=false
+enable_neuroshell=true
+enable_imgui=false
+
+# SLAG_LEGION uses the proven sl_engine.cpp backend
+# VulkanCore migration was attempted but requires implementing 70+ API functions
+# The v2 files remain as reference for future clean-slate projects

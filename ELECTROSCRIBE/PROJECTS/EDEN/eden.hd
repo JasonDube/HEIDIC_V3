@@ -1,0 +1,20 @@
+// EDEN - Level Editor
+// Place models and lights, save/load scenes
+
+extern fn eden_init(width: i32, height: i32): i32;
+extern fn eden_run(): void;
+extern fn eden_cleanup(): void;
+
+fn main(): void {
+    print("=== EDEN Level Editor ===\n");
+    
+    if eden_init(1400, 900) == 0 {
+        print("Failed to initialize EDEN\n");
+        return;
+    }
+    
+    eden_run();
+    eden_cleanup();
+    
+    print("Done.\n");
+}

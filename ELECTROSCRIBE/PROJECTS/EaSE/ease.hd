@@ -1,0 +1,20 @@
+// EaSE - Easy Synapse Editor
+// OBJ Model Viewer (view only, no editing)
+
+extern fn ease_init(width: i32, height: i32): i32;
+extern fn ease_run(): void;
+extern fn ease_cleanup(): void;
+
+fn main(): void {
+    print("=== EaSE - OBJ Model Viewer ===\n");
+    
+    if ease_init(1280, 720) == 0 {
+        print("Failed to initialize EaSE\n");
+        return;
+    }
+    
+    ease_run();
+    ease_cleanup();
+    
+    print("Done.\n");
+}
