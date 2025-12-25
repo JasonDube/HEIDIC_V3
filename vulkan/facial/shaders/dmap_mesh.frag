@@ -10,13 +10,20 @@
 // Inputs from vertex shader
 layout(location = 0) in vec3 fragWorldPos;
 layout(location = 1) in vec3 fragNormal;
-layout(location = 2) in vec2 fragTexCoord;
+layout(location = 2) in vec2 fragTexCoord;  // UV0
+layout(location = 3) in vec2 fragTexCoord1; // UV1 - for debug visualization
 
 // Output color
 layout(location = 0) out vec4 outColor;
 
 // Base color texture (sampled with UV0)
 layout(binding = 2) uniform sampler2D baseTexture;
+
+// Facial UBO - for debug mode
+layout(binding = 0) uniform FacialUBO {
+    vec4 weights[8];  // Slider weights (not used in fragment shader)
+    vec4 settings;    // x = globalStrength, y = mirrorThreshold, z = hasDMap, w = debugMode
+} facial;
 
 // Push constants
 layout(push_constant) uniform PushConstants {
@@ -32,6 +39,29 @@ const vec3 LIGHT_COLOR = vec3(1.0, 0.98, 0.95);
 const vec3 AMBIENT_COLOR = vec3(0.2, 0.2, 0.25);
 
 void main() {
+    // Debug Mode: Show UV1 coordinates as colors (R=U, G=V, B=0)
+    // Use settings.w as debug mode flag: 1.0 = UV1 visualization
+    if (facial.settings.w > 0.5) {
+        // Check if UV1 is invalid (all zeros or NaN)
+        if (fragTexCoord1.x == 0.0 && fragTexCoord1.y == 0.0) {
+            // Invalid UV1 - show bright magenta to indicate problem
+            outColor = vec4(1.0, 0.0, 1.0, 1.0);  // Magenta = invalid UV1
+            return;
+        }
+        
+        // Clamp UV1 to [0,1] range for display
+        vec2 uv1Clamped = clamp(fragTexCoord1, vec2(0.0), vec2(1.0));
+        
+        // Enhance visibility: multiply by 2 and clamp to make colors more vibrant
+        // This helps see subtle variations
+        float u = clamp(uv1Clamped.x * 2.0, 0.0, 1.0);
+        float v = clamp(uv1Clamped.y * 2.0, 0.0, 1.0);
+        
+        outColor = vec4(u, v, 0.0, 1.0);
+        return;
+    }
+    
+    // Normal rendering mode
     // Sample base texture
     vec4 texColor = texture(baseTexture, fragTexCoord);
     vec3 baseColor = texColor.rgb * push.objectColor.rgb;

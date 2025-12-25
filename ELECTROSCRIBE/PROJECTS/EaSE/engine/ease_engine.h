@@ -16,6 +16,9 @@
 #include "../../../../vulkan/utils/raycast.h"
 #include <string>
 #include <vector>
+#include <map>
+#include <algorithm>
+#include <cmath>
 
 namespace ease {
 
@@ -26,7 +29,8 @@ namespace ease {
 struct Vertex {
     glm::vec3 position;
     glm::vec3 normal;
-    glm::vec2 texCoord;
+    glm::vec2 texCoord;   // UV0 - for base texture
+    glm::vec2 texCoord1;  // UV1 - for DMap sampling (optional)
 };
 
 // ============================================================================
@@ -38,6 +42,7 @@ struct Mesh {
     std::vector<uint32_t> indices;
     vkcore::MeshHandle renderHandle = vkcore::INVALID_MESH;
     std::string name;
+    bool hasUV1 = false;  // True if mesh has second UV channel for DMap sampling
 };
 
 // ============================================================================
@@ -80,6 +85,9 @@ public:
     bool loadTexture(const std::string& path);
     void openFileDialog();
     void openTextureDialog();
+    void loadDMapFromFile();           // Load DMap image from file dialog
+    void createRegionTestDMap();       // Create a test DMap with regions colored and rest grey
+    void createSimpleCenterTestDMap(); // Create a simple test with only center square having displacement
     
     // Scroll callback (called by GLFW)
     void onScroll(float yoffset);
@@ -92,7 +100,7 @@ private:
     void render();
     void renderUI();
     void renderPaintUI();
-    void uploadMeshToGPU();
+    void uploadMeshToGPU(bool autoFrame = false);  // autoFrame: only true on initial load
     void initPainterFromMesh();  // Initialize painter with current mesh data
     
     // Vulkan
@@ -109,6 +117,8 @@ private:
     bool m_useFacialAnimation = false;  // Toggle facial animation
     bool m_showFacialUI = false;         // Show facial slider UI
     float m_facialSliders[8] = {0};      // First 8 sliders for UI
+    bool m_pendingDMapUpdate = false;    // Flag to update DMap displacement at end of frame
+    bool m_dmapUpdateInProgress = false;  // Guard to prevent re-entrancy
     
     // Facial Painting (DMap Creation)
     facial::FacialPainter m_painter;
@@ -118,6 +128,19 @@ private:
     
     // Data
     Mesh m_mesh;
+    std::vector<glm::vec3> m_basePositions;  // Original positions before DMap displacement (for vertex welding)
+    
+    // Vertex welding data (using custom comparator for glm::vec3)
+    struct Vec3Comparator {
+        bool operator()(const glm::vec3& a, const glm::vec3& b) const {
+            const float eps = 0.0001f;
+            if (std::abs(a.x - b.x) > eps) return a.x < b.x;
+            if (std::abs(a.y - b.y) > eps) return a.y < b.y;
+            return a.z < b.z;
+        }
+    };
+    std::map<glm::vec3, std::vector<uint32_t>, Vec3Comparator> m_weldMap;  // Maps position -> vertex indices that share it
+    bool m_weldMapBuilt = false;  // Track if weld map has been built
     OrbitCamera m_camera;
     vkcore::TextureHandle m_texture = vkcore::INVALID_TEXTURE;
     std::string m_textureName;
@@ -147,10 +170,28 @@ private:
     bool m_flipNormals = false;           // Track if normals have been flipped
     bool m_pendingNormalFlip = false;     // Deferred flip operation
     int m_pendingRecalcNormals = 0;       // 0=none, 1=outward, 2=inward
+    bool m_pendingFacialReupload = false; // Deferred mesh re-upload for facial animation
+    
+    // UV Visualization
+    vkcore::TextureHandle m_uv0VizTexture = vkcore::INVALID_TEXTURE;  // UV0 visualization texture
+    vkcore::TextureHandle m_uv1VizTexture = vkcore::INVALID_TEXTURE;  // UV1 visualization texture
+    bool m_showUVViewer = false;          // Show UV viewer window
+    bool m_showTextureBackground = true;  // Show diffuse texture as background in UV viewer
+    bool m_flipVCoordinate = false;       // Toggle V coordinate flip (for debugging coordinate systems)
+    bool m_showUV1Regions = false;        // Show UV1 region rectangles overlay
     
     // Helper functions
     void flipMeshNormals();               // Flip all normals in current mesh
     void recalculateNormals(bool outward); // Recalculate all normals consistently
+    void createTestDMap(int sliderIndex, const std::string& name, float dispX, float dispY, float dispZ); // Create a test DMap for testing
+    void generateUV1();                    // Generate UV1 channel for DMap sampling
+    void generateUVVisualization(int uvChannel); // Generate UV visualization texture (0=UV0, 1=UV1)
+    void renderUVViewerWindow();          // Render the UV viewer ImGui window
+    
+    // Vertex welding for DMap displacement
+    void buildWeldMap();                   // Build map of vertices sharing positions
+    void applyDMapDisplacementCPU();      // Apply DMap displacement CPU-side with vertex welding
+    glm::vec3 sampleDMapCPU(glm::vec2 uv1); // Sample DMap texture on CPU (for displacement)
     
     // Light settings (for UI)
     glm::vec3 m_lightDir = glm::normalize(glm::vec3(0.5f, -1.0f, 0.5f));

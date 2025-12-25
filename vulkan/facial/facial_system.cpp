@@ -8,8 +8,11 @@
 #include <fstream>
 #include <cstring>
 #include <algorithm>
+#include <array>
 
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/glm.hpp>
+#include <cmath>
 
 // stb_image for DMap loading (already included elsewhere, just declare)
 #include "../../stdlib/stb_image.h"
@@ -193,6 +196,12 @@ void FacialSystem::shutdown() {
         m_uboMemory = VK_NULL_HANDLE;
     }
     
+    // Destroy neutral DMap texture
+    if (m_neutralDMapTexture != vkcore::INVALID_TEXTURE) {
+        m_core->destroyTexture(m_neutralDMapTexture);
+        m_neutralDMapTexture = vkcore::INVALID_TEXTURE;
+    }
+    
     // Destroy DMap textures
     for (auto handle : m_dmapHandles) {
         if (handle != vkcore::INVALID_TEXTURE) {
@@ -233,13 +242,150 @@ int FacialSystem::loadDMap(const std::string& path, const std::string& name, int
     return result;
 }
 
-int FacialSystem::loadDMapFromMemory(const uint8_t* pixels, uint32_t width, uint32_t height,
-                                     const std::string& name, int sliderIndex, int channels) {
-    if (!m_initialized || !m_core) return -1;
-    if (sliderIndex < 0 || sliderIndex >= MAX_SLIDERS) return -1;
+// ============================================================================
+// DMap Padding - Extend displacement values across UV seams
+// ============================================================================
+// This dilates non-neutral values into neutral grey areas to prevent
+// vertex separation at UV seams. Similar to what Sims 4 does.
+// ============================================================================
+
+void FacialSystem::padDMapSeams(uint8_t* pixels, uint32_t width, uint32_t height, int channels, 
+                                int paddingRadius, float maxBlendFactor, int passes) {
+    if (!pixels || width == 0 || height == 0 || channels < 3) return;
     
-    // Create texture in VulkanCore
-    vkcore::TextureHandle texHandle = m_core->createTexture(pixels, width, height, channels);
+    std::cout << "[DMap] Padding seams: radius=" << paddingRadius 
+              << ", blend=" << maxBlendFactor << ", passes=" << passes << "..." << std::flush;
+    
+    // Neutral grey threshold (128 ± tolerance)
+    const uint8_t neutralThreshold = 5;  // Consider 123-133 as "neutral"
+    const uint8_t neutralValue = 128;
+    
+    int totalPaddedPixels = 0;
+    
+    // Multiple passes for better coverage
+    for (int pass = 0; pass < passes; ++pass) {
+        // Create a copy for reading (we'll write to original)
+        size_t pixelCount = width * height;
+        std::vector<uint8_t> source(pixelCount * channels);
+        memcpy(source.data(), pixels, source.size());
+        
+        int paddedPixels = 0;
+        
+        // For each pixel
+        for (uint32_t y = 0; y < height; ++y) {
+            for (uint32_t x = 0; x < width; ++x) {
+                    size_t idx = (y * width + x) * channels;
+                
+                // Check if this pixel is neutral (or very close to neutral)
+                uint8_t r = source[idx + 0];
+                uint8_t g = source[idx + 1];
+                uint8_t b = source[idx + 2];
+                
+                bool isNeutral = (std::abs(static_cast<int>(r) - static_cast<int>(neutralValue)) < neutralThreshold &&
+                                 std::abs(static_cast<int>(g) - static_cast<int>(neutralValue)) < neutralThreshold &&
+                                 std::abs(static_cast<int>(b) - static_cast<int>(neutralValue)) < neutralThreshold);
+                
+                // If neutral, try to find nearby non-neutral pixels and blend them
+                if (isNeutral) {
+                    float totalR = 0.0f, totalG = 0.0f, totalB = 0.0f;
+                    float totalWeight = 0.0f;
+                    
+                    // Sample nearby pixels in a circular pattern
+                    for (int dy = -paddingRadius; dy <= paddingRadius; ++dy) {
+                        for (int dx = -paddingRadius; dx <= paddingRadius; ++dx) {
+                            // Skip center pixel (we're trying to fill it)
+                            if (dx == 0 && dy == 0) continue;
+                            
+                            // Circular distance check
+                            float dist = std::sqrt(static_cast<float>(dx * dx + dy * dy));
+                            if (dist > paddingRadius) continue;
+                            
+                            int sx = static_cast<int>(x) + dx;
+                            int sy = static_cast<int>(y) + dy;
+                            
+                            // Bounds check
+                            if (sx < 0 || sx >= static_cast<int>(width) ||
+                                sy < 0 || sy >= static_cast<int>(height)) {
+                                continue;
+                            }
+                            
+                            size_t srcIdx = (sy * width + sx) * channels;
+                            uint8_t sr = source[srcIdx + 0];
+                            uint8_t sg = source[srcIdx + 1];
+                            uint8_t sb = source[srcIdx + 2];
+                            
+                            // Check if this neighbor is non-neutral
+                            bool neighborIsNeutral = (std::abs(static_cast<int>(sr) - static_cast<int>(neutralValue)) < neutralThreshold &&
+                                                      std::abs(static_cast<int>(sg) - static_cast<int>(neutralValue)) < neutralThreshold &&
+                                                      std::abs(static_cast<int>(sb) - static_cast<int>(neutralValue)) < neutralThreshold);
+                            
+                            if (!neighborIsNeutral) {
+                                // Weight by inverse distance (closer = stronger influence)
+                                float weight = 1.0f / (1.0f + dist);
+                                totalR += sr * weight;
+                                totalG += sg * weight;
+                                totalB += sb * weight;
+                                totalWeight += weight;
+                            }
+                        }
+                    }
+                    
+                    // If we found non-neutral neighbors, blend them in
+                    if (totalWeight > 0.001f) {
+                        // Blend: mix original neutral with nearby values
+                        // Use a falloff so padding is subtle near seams
+                        // Increase blend factor for later passes (more aggressive)
+                        float passMultiplier = 1.0f + (pass * 0.2f);  // Each pass gets slightly more aggressive
+                        float blendFactor = std::min(totalWeight / (paddingRadius * 2.0f) * passMultiplier, maxBlendFactor);
+                        
+                        pixels[idx + 0] = static_cast<uint8_t>(neutralValue * (1.0f - blendFactor) + (totalR / totalWeight) * blendFactor);
+                        pixels[idx + 1] = static_cast<uint8_t>(neutralValue * (1.0f - blendFactor) + (totalG / totalWeight) * blendFactor);
+                        pixels[idx + 2] = static_cast<uint8_t>(neutralValue * (1.0f - blendFactor) + (totalB / totalWeight) * blendFactor);
+                        
+                        paddedPixels++;
+                    }
+                }
+            }
+        }
+        
+        totalPaddedPixels += paddedPixels;
+    }
+    
+    std::cout << " done (" << totalPaddedPixels << " pixels padded over " << passes << " passes)" << std::endl;
+}
+
+int FacialSystem::loadDMapFromMemory(const uint8_t* pixels, uint32_t width, uint32_t height,
+                                     const std::string& name, int sliderIndex, int channels, 
+                                     bool padSeams, int paddingRadius, float maxBlendFactor) {
+    std::cout << "[Facial] loadDMapFromMemory called: " << name << ", size=" << width << "x" << height 
+              << ", channels=" << channels << ", slider=" << sliderIndex << ", padSeams=" << padSeams 
+              << ", paddingRadius=" << paddingRadius << ", maxBlendFactor=" << maxBlendFactor << std::endl;
+    
+    if (!m_initialized || !m_core) {
+        std::cerr << "[Facial] Not initialized or core is null!" << std::endl;
+        return -1;
+    }
+    if (sliderIndex < 0 || sliderIndex >= MAX_SLIDERS) {
+        std::cerr << "[Facial] Invalid slider index: " << sliderIndex << std::endl;
+        return -1;
+    }
+    
+    // Copy pixel data (we may modify it for padding)
+    size_t pixelDataSize = width * height * channels;
+    std::vector<uint8_t> pixelCopy(pixelDataSize);
+    memcpy(pixelCopy.data(), pixels, pixelDataSize);
+    
+    // Pad seams if requested (extends displacement values across UV seams to prevent cracking)
+    if (padSeams) {
+        padDMapSeams(pixelCopy.data(), width, height, channels, paddingRadius, maxBlendFactor, 2);  // 2 passes
+    }
+    
+    std::cout << "[Facial] Calling createTextureLinear (for DMap - no SRGB conversion)..." << std::endl;
+    // Create texture in VulkanCore with LINEAR format (no SRGB conversion)
+    // CRITICAL: DMap textures must use linear format, not SRGB!
+    // SRGB would convert neutral grey (128,128,128) to a different value when sampled
+    vkcore::TextureHandle texHandle = m_core->createTextureLinear(pixelCopy.data(), width, height, channels);
+    std::cout << "[Facial] createTextureLinear returned handle: " << texHandle << std::endl;
     if (texHandle == vkcore::INVALID_TEXTURE) {
         std::cerr << "[Facial] Failed to create DMap texture" << std::endl;
         return -1;
@@ -252,9 +398,9 @@ int FacialSystem::loadDMapFromMemory(const uint8_t* pixels, uint32_t width, uint
     dmap.height = height;
     dmap.sliderIndex = sliderIndex;
     dmap.valid = true;
-    // Store pixel data for reference (optional)
+    // Store pixel data for reference (after padding, if applied)
     dmap.pixels.resize(width * height * channels);
-    memcpy(dmap.pixels.data(), pixels, dmap.pixels.size());
+    memcpy(dmap.pixels.data(), pixelCopy.data(), dmap.pixels.size());
     
     int index = static_cast<int>(m_dmaps.size());
     m_dmaps.push_back(std::move(dmap));
@@ -287,9 +433,24 @@ int FacialSystem::loadDMapFromMemory(const uint8_t* pixels, uint32_t width, uint
             write.descriptorCount = 1;
             write.pImageInfo = &imageInfo;
             
+            // CRITICAL: Wait for GPU to be idle before updating descriptor sets
+            // This ensures the texture is fully created before we bind it
+            vkDeviceWaitIdle(device);
+            
             vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+            std::cout << "[Facial] DMap texture bound to descriptor set (binding 1)" << std::endl;
+            std::cout << "[Facial] Texture handle: " << texHandle << ", view: " << (void*)view << ", sampler: " << (void*)sampler << std::endl;
+        } else {
+            std::cerr << "[Facial] Failed to get texture info for DMap!" << std::endl;
         }
+    } else {
+        std::cout << "[Facial] DMap loaded but not binding (index=" << index << ", only index 0 is bound)" << std::endl;
     }
+    
+    // CRITICAL: Update the GPU buffer to set hasDMap flag!
+    updateGPUBuffer();
+    std::cout << "[Facial] Updated GPU buffer, hasDMap = " << m_uboData.settings.z << std::endl;
+    std::cout << "[Facial] Total DMaps loaded: " << m_dmaps.size() << std::endl;
     
     return index;
 }
@@ -440,8 +601,37 @@ void FacialSystem::setGlobalStrength(float strength) {
     m_uboData.settings.x = strength;
 }
 
+void FacialSystem::setBaseTexture(vkcore::TextureHandle texture) {
+    if (!m_initialized || !m_core || m_descriptorSet == VK_NULL_HANDLE) return;
+    
+    // Use provided texture or default if invalid
+    vkcore::TextureHandle texToUse = (texture != vkcore::INVALID_TEXTURE) ? texture : m_core->getDefaultTexture();
+    
+    VkImageView view;
+    VkSampler sampler;
+    if (m_core->getTextureInfo(texToUse, view, sampler)) {
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = view;
+        imageInfo.sampler = sampler;
+        
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = m_descriptorSet;
+        write.dstBinding = 2;  // Base texture binding
+        write.dstArrayElement = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &imageInfo;
+        
+        vkUpdateDescriptorSets(m_core->getDevice(), 1, &write, 0, nullptr);
+    }
+}
+
 void FacialSystem::bind() {
-    if (!m_initialized || !m_core || m_pipeline == VK_NULL_HANDLE) return;
+    if (!m_initialized || !m_core || m_pipeline == VK_NULL_HANDLE) {
+        return;
+    }
     
     // Update UBO with current slider weights
     updateGPUBuffer();
@@ -457,6 +647,7 @@ void FacialSystem::bind() {
 }
 
 void FacialSystem::drawMesh(vkcore::MeshHandle mesh, const glm::mat4& model,
+                            const glm::mat4& view, const glm::mat4& projection,
                             vkcore::TextureHandle baseTexture, const glm::vec4& color) {
     if (!m_initialized || !m_core) return;
     
@@ -467,10 +658,27 @@ void FacialSystem::drawMesh(vkcore::MeshHandle mesh, const glm::mat4& model,
         return;
     }
     
+    // NOTE: Base texture should be bound before rendering (not during command recording)
+    // The default texture is already bound during initialization
+    
     VkCommandBuffer cmd = m_core->getCurrentCommandBuffer();
     
-    // TODO: Push constants for model matrix and color
-    // For now, this is a placeholder - we'll need to define push constants
+    // Push constants: model, view, projection, color
+    struct PushConstants {
+        glm::mat4 model;
+        glm::mat4 view;
+        glm::mat4 projection;
+        glm::vec4 color;
+    } pushConstants;
+    
+    pushConstants.model = model;
+    pushConstants.view = view;
+    pushConstants.projection = projection;
+    pushConstants.color = color;
+    
+    vkCmdPushConstants(cmd, m_pipelineLayout, 
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(PushConstants), &pushConstants);
     
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, offsets);
@@ -478,8 +686,27 @@ void FacialSystem::drawMesh(vkcore::MeshHandle mesh, const glm::mat4& model,
     vkCmdDrawIndexed(cmd, indexCount, 1, 0, 0, 0);
 }
 
+void FacialSystem::setDebugMode(bool enabled) {
+    m_debugMode = enabled;
+    m_uboData.settings.w = enabled ? 1.0f : 0.0f;
+    updateGPUBuffer();
+}
+
 void FacialSystem::updateGPUBuffer() {
     if (!m_initialized || m_uboMemory == VK_NULL_HANDLE) return;
+    
+    // Update hasDMap flag (settings.z) - 1.0 if any valid DMap is loaded, 0.0 otherwise
+    bool hasValidDMap = false;
+    for (const auto& dmap : m_dmaps) {
+        if (dmap.valid) {
+            hasValidDMap = true;
+            break;
+        }
+    }
+    m_uboData.settings.z = hasValidDMap ? 1.0f : 0.0f;
+    
+    // Update debug mode (settings.w)
+    m_uboData.settings.w = m_debugMode ? 1.0f : 0.0f;
     
     void* data;
     vkMapMemory(m_core->getDevice(), m_uboMemory, 0, sizeof(FacialUBO), 0, &data);
@@ -533,11 +760,11 @@ bool FacialSystem::createFacialResources() {
     // Create descriptor set layout
     std::vector<VkDescriptorSetLayoutBinding> bindings(3);
     
-    // Binding 0: Facial UBO (slider weights)
+    // Binding 0: Facial UBO (slider weights) - used in both vertex and fragment shaders
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;  // Both stages!
     bindings[0].pImmutableSamplers = nullptr;
     
     // Binding 1: DMap texture sampler (vertex shader)
@@ -609,6 +836,64 @@ bool FacialSystem::createFacialResources() {
     uboWrite.pBufferInfo = &uboInfo;
     
     vkUpdateDescriptorSets(device, 1, &uboWrite, 0, nullptr);
+    
+    // Create neutral grey DMap texture (128, 128, 128 = no displacement)
+    // IMPORTANT: The default white texture (255,255,255) encodes +1,+1,+1 displacement!
+    // We need neutral grey (128,128,128) which encodes (0,0,0) displacement.
+    // CRITICAL: Use LINEAR format (no SRGB) so values are sampled exactly as written
+    uint8_t neutralGrey[4] = {128, 128, 128, 255};  // RGB = 128 = neutral, A = 255 = opaque
+    m_neutralDMapTexture = m_core->createTextureLinear(neutralGrey, 1, 1, 4);
+    if (m_neutralDMapTexture == vkcore::INVALID_TEXTURE) {
+        std::cerr << "[Facial] Failed to create neutral DMap texture!" << std::endl;
+        return false;
+    }
+    std::cout << "[Facial] Created neutral grey DMap texture (128,128,128) for default binding" << std::endl;
+    
+    // Get neutral DMap texture info
+    VkImageView neutralView;
+    VkSampler neutralSampler;
+    if (!m_core->getTextureInfo(m_neutralDMapTexture, neutralView, neutralSampler)) {
+        std::cerr << "[Facial] Failed to get neutral DMap texture info!" << std::endl;
+        return false;
+    }
+    
+    // Bind default textures
+    VkImageView defaultView;
+    VkSampler defaultSampler;
+    if (m_core->getTextureInfo(m_core->getDefaultTexture(), defaultView, defaultSampler)) {
+        // Binding 1: Neutral grey DMap (128,128,128 = no displacement)
+        VkDescriptorImageInfo neutralImageInfo{};
+        neutralImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        neutralImageInfo.imageView = neutralView;
+        neutralImageInfo.sampler = neutralSampler;
+        
+        VkWriteDescriptorSet dmapWrite{};
+        dmapWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        dmapWrite.dstSet = m_descriptorSet;
+        dmapWrite.dstBinding = 1;
+        dmapWrite.dstArrayElement = 0;
+        dmapWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        dmapWrite.descriptorCount = 1;
+        dmapWrite.pImageInfo = &neutralImageInfo;
+        
+        // Binding 2: Default base texture (white)
+        VkDescriptorImageInfo defaultImageInfo{};
+        defaultImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        defaultImageInfo.imageView = defaultView;
+        defaultImageInfo.sampler = defaultSampler;
+        
+        VkWriteDescriptorSet baseWrite{};
+        baseWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        baseWrite.dstSet = m_descriptorSet;
+        baseWrite.dstBinding = 2;
+        baseWrite.dstArrayElement = 0;
+        baseWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        baseWrite.descriptorCount = 1;
+        baseWrite.pImageInfo = &defaultImageInfo;
+        
+        std::array<VkWriteDescriptorSet, 2> writes = {dmapWrite, baseWrite};
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    }
     
     return true;
 }
@@ -733,11 +1018,20 @@ bool FacialSystem::createDMapPipeline() {
     dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates = dynamicStates.data();
     
+    // Push constant range: model (mat4), view (mat4), projection (mat4), color (vec4)
+    // Total: 3 * 16 floats + 4 floats = 52 floats = 208 bytes
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(glm::mat4) * 3 + sizeof(glm::vec4);  // model + view + proj + color
+    
     // Pipeline layout
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &m_descriptorSetLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
     
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS) {
         vkDestroyShaderModule(device, vertModule, nullptr);
@@ -878,7 +1172,13 @@ void facial_draw_mesh(unsigned int meshHandle,
     model = glm::rotate(model, glm::radians(rz), glm::vec3(0, 0, 1));
     model = glm::scale(model, glm::vec3(sx, sy, sz));
     
+    // Use identity matrices for view/projection (C API doesn't have camera access)
+    // In practice, the C++ API should be used which passes proper camera matrices
+    glm::mat4 view = glm::mat4(1.0f);
+    glm::mat4 projection = glm::mat4(1.0f);
+    
     g_facialSystem->drawMesh(static_cast<vkcore::MeshHandle>(meshHandle), model,
+                             view, projection,
                              static_cast<vkcore::TextureHandle>(baseTexture),
                              glm::vec4(r, g, b, a));
 }

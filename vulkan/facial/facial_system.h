@@ -51,7 +51,8 @@ public:
     
     // Load DMap from raw pixel data (RGB or RGBA)
     int loadDMapFromMemory(const uint8_t* pixels, uint32_t width, uint32_t height,
-                          const std::string& name, int sliderIndex, int channels = 3);
+                          const std::string& name, int sliderIndex, int channels = 3,
+                          bool padSeams = true, int paddingRadius = 3, float maxBlendFactor = 0.7f);
     
     // Get DMap info
     const DMapTexture* getDMap(int index) const;
@@ -124,9 +125,17 @@ public:
     void setGlobalStrength(float strength);
     float getGlobalStrength() const { return m_globalStrength; }
     
+    // Set debug mode (for UV1 visualization)
+    void setDebugMode(bool enabled);
+    bool getDebugMode() const { return m_debugMode; }
+    
+    // Set base texture (call before bind() to update descriptor set)
+    void setBaseTexture(vkcore::TextureHandle texture);
+    
     // Draw a mesh with DMap displacement
     // Uses the currently bound DMap textures and slider weights
     void drawMesh(vkcore::MeshHandle mesh, const glm::mat4& model,
+                  const glm::mat4& view, const glm::mat4& projection,
                   vkcore::TextureHandle baseTexture = vkcore::INVALID_TEXTURE,
                   const glm::vec4& color = glm::vec4(1.0f));
     
@@ -140,6 +149,10 @@ private:
     // Upload UBO data to GPU
     void updateGPUBuffer();
     
+    // DMap preprocessing
+    void padDMapSeams(uint8_t* pixels, uint32_t width, uint32_t height, int channels, 
+                     int paddingRadius = 3, float maxBlendFactor = 0.7f, int passes = 2);
+    
     // ========================================================================
     // State
     // ========================================================================
@@ -150,10 +163,12 @@ private:
     // DMap textures
     std::vector<DMapTexture> m_dmaps;
     std::vector<vkcore::TextureHandle> m_dmapHandles;  // GPU texture handles
+    vkcore::TextureHandle m_neutralDMapTexture = vkcore::INVALID_TEXTURE;  // Neutral grey (128,128,128) for default binding
     
     // Sliders
     std::array<FacialSlider, MAX_SLIDERS> m_sliders;
     float m_globalStrength = 1.0f;
+    bool m_debugMode = false;  // UV1 visualization mode
     
     // Presets
     std::unordered_map<std::string, ExpressionPreset> m_presets;

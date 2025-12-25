@@ -178,6 +178,7 @@ public:
     
     TextureHandle loadTexture(const std::string& path);
     TextureHandle createTexture(const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t channels = 4);
+    TextureHandle createTextureLinear(const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t channels = 4);  // Creates texture with linear format (no SRGB) - for DMap textures
     void bindTexture(TextureHandle handle);  // Binds for next draw calls
     void destroyTexture(TextureHandle handle);
     TextureHandle getDefaultTexture() const { return m_defaultTexture; }
